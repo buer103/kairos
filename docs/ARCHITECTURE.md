@@ -5,328 +5,398 @@
 
 ## 1. Design Philosophy
 
-Kairos inherits from two frameworks and extends them in four directions:
+Kairos inherits from two proven frameworks and extends them in four directions:
 
 | From | What | Why |
 |------|------|-----|
-| **Hermes** | Agent Loop, Tool Registry, Skills+Curator, Session Search, Gateway, RL Training | The most complete personal agent ecosystem |
+| **Hermes** | Agent Loop, Tool Registry, Skills+Curator, Session Search, Gateway, RL Training, Chat CLI | The most complete personal agent ecosystem |
 | **DeerFlow** | Middleware Pipeline, Sub-Agent Factory, Sandbox, Typed State, Context Compression | The cleanest production-grade architecture |
 | **Kairos (new)** | RAG Engine, Structured Knowledge, Evidence Chain, Confidence+Citation | Capabilities neither framework provides |
 
-## 2. Module Map
+---
+
+## 2. Three Roles
+
+Kairos is designed to serve three distinct roles simultaneously:
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                      Kairos Framework                         │
-├──────────────────────────────────────────────────────────────┤
-│                                                              │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────┐ │
-│  │  Agent   │  │Middleware│  │  Tool    │  │   RAG        │ │
-│  │  Loop    │  │ Pipeline │  │ Registry │  │   Engine     │ │
-│  │ (Hermes) │  │(DeerFlow)│  │ (Hermes) │  │  (Kairos)   │ │
-│  └──────────┘  └──────────┘  └──────────┘  └──────────────┘ │
-│                                                              │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────┐ │
-│  │ Knowledge│  │ Evidence │  │Confidence│  │   Model      │ │
-│  │  Store   │  │  Chain   │  │ +Citation│  │  Providers   │ │
-│  │ (Kairos) │  │ (Kairos) │  │ (Kairos) │  │  (Hermes)    │ │
-│  └──────────┘  └──────────┘  └──────────┘  └──────────────┘ │
-│                                                              │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────┐ │
-│  │ Skills + │  │ Session  │  │  Gateway │  │  Sub-Agent   │ │
-│  │ Curator  │  │  Search  │  │  多平台   │  │   Factory    │ │
-│  │ (Hermes) │  │ (Hermes) │  │ (Hermes) │  │  (DeerFlow)  │ │
-│  └──────────┘  └──────────┘  └──────────┘  └──────────────┘ │
-│                                                              │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐                  │
-│  │ Sandbox  │  │  Typed   │  │   RL     │                  │
-│  │(DeerFlow)│  │  State   │  │ Training │                  │
-│  │          │  │(DeerFlow)│  │ (Hermes) │                  │
-│  └──────────┘  └──────────┘  └──────────┘                  │
-│                                                              │
-└──────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────┐
+│              Kairos Framework               │
+│                                             │
+│  Role 1: Standalone CLI                     │
+│  $ kairos chat                              │
+│  $ kairos run "诊断故障"                     │
+│                                             │
+│  Role 2: Python Library                     │
+│  from kairos import Agent                   │
+│  agent = Agent(tools=..., knowledge=...)    │
+│  agent.run("诊断故障")                       │
+│                                             │
+│  Role 3: Business Platform                  │
+│  YourAgent(Kairos) → 诊断系统 / RAG系统 / ... │
+│  Kairos provides the loop, tools, middleware │
+│  You provide the domain tools and knowledge  │
+└─────────────────────────────────────────────┘
 ```
 
 ---
 
-## 3. Module-by-Module Comparison
+## 3. Module Map
 
-### 3.1 Agent Loop
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                        Kairos Framework                           │
+├──────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐        │
+│  │  Agent   │  │Middleware│  │  Tool    │  │   Chat   │        │
+│  │  Loop    │  │ Pipeline │  │ Registry │  │   CLI    │        │
+│  │ (Hermes) │  │(DeerFlow)│  │ (Hermes) │  │ (Hermes) │        │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘        │
+│                                                                  │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐        │
+│  │   RAG    │  │Knowledge │  │ Evidence │  │Confidence│        │
+│  │  Engine  │  │  Store   │  │  Chain   │  │ +Citation│        │
+│  │ (Kairos) │  │ (Kairos) │  │ (Kairos) │  │ (Kairos) │        │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘        │
+│                                                                  │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐        │
+│  │ Skills + │  │  Model   │  │ Sub-Agent│  │ Session  │        │
+│  │ Curator  │  │Providers │  │ Factory  │  │  Search  │        │
+│  │ (Hermes) │  │ (Hermes) │  │(DeerFlow)│  │ (Hermes) │        │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘        │
+│                                                                  │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐        │
+│  │  Typed   │  │ Sandbox  │  │ Gateway  │  │   RL     │        │
+│  │  State   │  │(DeerFlow)│  │ (Hermes) │  │ Training │        │
+│  │(DeerFlow)│  │          │  │          │  │ (Hermes) │        │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘        │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### Three-Layer Classification
+
+Every capability in Kairos falls into exactly one of these layers:
+
+| Layer | Rule | Examples |
+|-------|------|----------|
+| **Tool** | Agent actively decides when to call it | `rag_search`, `knowledge_lookup`, user-defined domain tools |
+| **Middleware** | Framework auto-executes at specific lifecycle hooks | EvidenceTracker, ConfidenceScorer, ContextCompress |
+| **Infrastructure** | Underlying storage/engine used by both tools and middleware | VectorStore, KnowledgeStore, EvidenceTrackerDB |
+
+```
+Agent Loop (core, unchanged)
+    │
+    ├── Tools: Agent calls proactively
+    │   └── e.g. "I need to search the knowledge base → call rag_search()"
+    │
+    ├── Middleware: Framework intercepts passively
+    │   └── e.g. "A tool was called → EvidenceTracker records it"
+    │
+    └── Infrastructure: Shared by both
+        └── e.g. EvidenceTracker writes to EvidenceTrackerDB
+             rag_search() reads from VectorStore
+```
+
+---
+
+## 4. Module-by-Module Comparison
+
+### 4.1 Agent Loop
 
 | | Hermes | DeerFlow | Kairos |
 |---|--------|----------|--------|
-| **Implementation** | Hand-written `while` loop in `run_conversation()` | LangGraph `create_react_agent()` StateGraph | Hand-written `while` loop (from Hermes) |
-| **Complexity** | ~100 lines of core logic | Graph abstraction with nodes + conditional edges | ~100 lines, synchronous first |
-| **Extras** | Budget tracking, interrupt handling, compression triggers | Built-in checkpointing, graph visualization, conditional routing | Budget tracking from Hermes; compression delegated to middleware |
-| **Why Kairos chose Hermes** | LangGraph adds dependency weight for marginal benefit. The while-loop is simple, debuggable, and sufficient. DeerFlow's checkpointing will be replicated via middleware. |
+| **Implementation** | Hand-written `while` loop | LangGraph `create_react_agent()` | Hand-written `while` loop (from Hermes) |
+| **Complexity** | ~100 lines of core logic | Graph abstraction with nodes + edges | ~100 lines |
+| **Extras** | Budget tracking, interrupt handling, compression triggers | Built-in checkpointing, graph visualization | Budget tracking from Hermes; compression via middleware |
+| **Why Kairos chose Hermes** | LangGraph adds dependency weight for marginal benefit. The while-loop is simple, debuggable, and sufficient. |
 
-```
-Kairos Agent Loop (simplified):
+The Agent Loop itself stays **pure** — it only handles message passing, LLM calls, and tool dispatch. All enhancements (evidence tracking, confidence scoring, RAG) happen in middleware or tools, not in the loop.
 
-  messages = [system_prompt, user_message]
-  while iterations < max_iterations:
-      response = llm.chat(messages, tools)
-      if response.tool_calls:
-          for tc in response.tool_calls:
-              result = execute_tool(tc.name, tc.args)
-              messages.append(result)
-              evidence.track_step(tc, result)     # ← Kairos evidence tracking
-      else:
-          confidence = scorer.evaluate(messages)   # ← Kairos confidence
-          return response, confidence, evidence
-```
-
-### 3.2 Middleware Pipeline
+### 4.2 Middleware Pipeline
 
 | | Hermes | DeerFlow | Kairos |
 |---|--------|----------|--------|
-| **Has it?** | No | Yes, 11 layers | Yes, phased |
-| **Design** | Cross-cutting concerns scattered in `run_agent.py` and `model_tools.py` | 6 hook types: `before_agent`, `after_agent`, `before_model`, `after_model`, `wrap_model_call`, `wrap_tool_call` | Same 6 hooks from DeerFlow |
-| **MVP layers** | — | ThreadData → Uploads → Sandbox → DanglingToolCall → Summarization → Todo → Title → Memory → ViewImage → SubagentLimit → Clarification | 5 layers: EvidenceTracker → ContextCompress → ToolRateLimit → SkillLoader → Clarify |
-| **Why Kairos chose DeerFlow** | A middleware pipeline is the single biggest architectural advantage DeerFlow has. It separates every cross-cutting concern into an independent, testable, composable layer. Kairos starts with 5 layers and grows as needed. |
+| **Has it?** | No | Yes, 11 layers, 6 hook types | Yes, 6 hook types from DeerFlow |
+| **Design** | Cross-cutting concerns scattered | `before_agent`, `after_agent`, `before_model`, `after_model`, `wrap_model_call`, `wrap_tool_call` | Same 6 hooks |
+| **MVP layers** | — | 11 layers | 5 layers |
 
 ```
 Kairos Middleware Pipeline (MVP):
 
-  EvidenceTracker      before_model  → inject case/step IDs into context
-  ContextCompress      before_model  → summarize when near token limit
+  SkillLoader          before_agent   → load relevant skills by semantic match
+  EvidenceTracker      before_model   → inject case/step IDs into context
+  ContextCompress      before_model   → summarize when near token limit
   ToolRateLimit        wrap_tool_call → prevent runaway tool calls
-  SkillLoader          before_agent  → load relevant skills for the task
-  Clarify              wrap_tool_call → intercept ask_user, return to caller
+  ConfidenceScorer     after_agent    → evaluate confidence, attach evidence
 ```
 
-### 3.3 Tool Registry
+**Why Kairos chose DeerFlow:** A middleware pipeline is the single biggest architectural advantage DeerFlow has. It separates every cross-cutting concern into an independent, testable, composable layer. All middleware is optional — disable what you don't need.
+
+### 4.3 Tool Registry
 
 | | Hermes | DeerFlow | Kairos |
 |---|--------|----------|--------|
-| **Registration** | `registry.register()` — self-registering, auto-discovered from `tools/*.py` | 4 sources merged: config tools + MCP + builtins + conditional | Same as Hermes: self-registering with `registry.register()` |
+| **Registration** | `registry.register()` — auto-discovered from `tools/*.py` | 4 sources merged: config + MCP + builtins + conditional | Same as Hermes |
 | **Schema** | OpenAI function-calling format | LangChain BaseTool | OpenAI function-calling format |
-| **Discovery** | Automatic — any `tools/*.py` with `register()` at import time | Manual config or MCP dynamic discovery | Automatic (from Hermes) |
-| **Why Kairos chose Hermes** | Simpler. No LangChain dependency. A tool is a Python function + a JSON schema. That's it. |
+| **Why Kairos chose Hermes** | Simpler. A tool is a Python function + a JSON schema. No LangChain dependency. |
 
-### 3.4 RAG Engine (Kairos Original)
+### 4.4 Chat CLI
 
 | | Hermes | DeerFlow | Kairos |
 |---|--------|----------|--------|
-| **Knowledge retrieval** | No vector search. Skills loaded as Markdown text. | No vector search. Memory is JSON with mtime caching. | Full RAG pipeline with vector store |
+| **Interactive chat** | `hermes chat` | Web UI only | `kairos chat` |
+| **Single query** | `hermes chat -q "..."` | API only | `kairos run "..."` |
+| **Tool loading** | Via config | Via config | `kairos chat --tools my_tools.py` |
+| **Knowledge loading** | — | — | `kairos chat --knowledge fault_schema.py` |
+| **Session resume** | `hermes --resume` | Via thread_id | `kairos chat --resume <session_id>` |
+
+```
+$ kairos chat
+🤖 Kairos> 诊断 log-20260508.txt
+         [rag_search] → 找到故障模式 P-042
+         [log_query]  → 发现 ERR_THERMAL_001
+         [signal_query] → 温度 87.3°C
+         
+         根因: 控制器过热
+         置信度: 0.92
+         证据: [Step1] [Step2] [Step3]
+
+$ kairos run "诊断 log-20260508.txt"
+{ "conclusion": "控制器过热", "confidence": 0.92, "evidence": [...] }
+```
+
+### 4.5 Sub-Agent Factory
+
+Kairos takes DeerFlow's typed factory model and adds evidence chain inheritance.
+
+| | Hermes delegate_task | DeerFlow task | Kairos task |
+|---|------|------|------|
+| **Delegation** | `delegate_task` tool | `task` tool | `task` tool |
+| **Types** | leaf / orchestrator | general-purpose / bash | User-definable types |
+| **Tool restriction** | Via toolsets | Blacklist or whitelist | Blacklist or whitelist, per type |
+| **Concurrency** | Configurable (default 3) | Hard capped [2,4] | Configurable with hard cap |
+| **Timeout** | None | 900s configurable | Configurable |
+| **Context** | Isolated | Isolated | Isolated |
+| **Sandbox** | Independent terminal | Shared (lazy_init) | Configurable |
+| **Evidence** | No | No | ✅ Sub-chain → parent chain |
+
+```
+Lead Agent (interacting with user)
+    │
+    │  task(description="Analyze segment 01", subagent_type="diagnose")
+    ├── Sub-Agent A
+    │   └── EvidenceChain(sub_A): Step1 → Step2 → finding: anomaly_A
+    │
+    │  task(description="Analyze segment 02", subagent_type="diagnose")  
+    ├── Sub-Agent B
+    │   └── EvidenceChain(sub_B): Step1 → finding: no anomaly
+    │
+    │  task(description="Analyze segment 03", subagent_type="diagnose")
+    └── Sub-Agent C
+        └── EvidenceChain(sub_C): Step1 → Step2 → finding: anomaly_B
+
+Lead Agent synthesizes:
+    EvidenceChain(parent)
+    ├── sub_A: anomaly_A (overheat signal)
+    ├── sub_B: no anomaly
+    └── sub_C: anomaly_B (voltage drop)
+    → Conclusion: combined anomaly_A + anomaly_B → root cause
+```
+
+### 4.6 RAG Engine (Kairos Original)
+
+| | Hermes | DeerFlow | Kairos |
+|---|--------|----------|--------|
+| **Knowledge retrieval** | No vector search. Skills loaded as Markdown text. | No vector search. Memory is JSON. | Full RAG pipeline with vector store |
 | **External knowledge** | Not supported | Not supported | Pluggable knowledge base adapters |
-| **Skill-as-knowledge** | Skills loaded by name, no semantic matching | N/A | Skills indexed for semantic retrieval |
-| **Fusion** | No | No | Multi-source fusion: external KB + skills + session history |
+| **Fusion** | No | No | Multi-source: external KB + skills + session history |
 
-**Why neither Hermes nor DeerFlow has this:**
+RAG is implemented as two parts:
+- **Infrastructure**: `VectorStore`, adapters (Markdown, PDF, API), fusion strategies
+- **Tool**: `rag_search(query, top_k)` — the Agent actively calls this when it needs knowledge
 
-Both treat knowledge as something you inject once (Hermes: MEMORY.md at session start; DeerFlow: `<memory>` block in system prompt). Neither supports "search knowledge → use result → search again with new context" — the iterative retrieval pattern that RAG requires.
-
-**Kairos design:**
-
-```
-RAG Engine
-├── retriever.py       # Vector search (ChromaDB / FAISS)
-├── adapters/          # Knowledge base connectors
-│   ├── markdown.py    # Local Markdown files
-│   ├── pdf.py         # PDF documents
-│   └── api.py         # External KB via REST
-├── skills_index.py    # Semantic skill retrieval
-└── fusion.py          # Merge results from multiple sources
-```
-
-### 3.5 Structured Knowledge Framework (Kairos Original)
+### 4.7 Structured Knowledge Framework (Kairos Original)
 
 | | Hermes | DeerFlow | Kairos |
 |---|--------|----------|--------|
-| **Knowledge format** | SKILL.md (freeform Markdown) | JSON with `category` and `confidence` fields | User-defined typed schemas |
-| **Queryability** | grep by filename/title | Limited: facts are key-value | Full structured queries |
-| **Schema** | Implicit (convention-based) | Fixed (5 fact categories) | Explicit, user-defined per domain |
+| **Format** | Freeform Markdown | 5 fixed fact categories | User-defined typed schemas |
+| **Query** | grep | Limited key-value | Full structured queries |
 
-**Why neither framework does this well:**
-
-Hermes stores everything as unstructured Markdown. DeerFlow's facts have structure but only 5 fixed categories (`preference`, `knowledge`, `context`, `behavior`, `goal`). Neither supports domain-specific schemas like:
-
-```
-FaultRecord:
-  signal_name: str
-  signal_value: float
-  log_pattern: str
-  root_cause: str
-  solution: str
-  confidence: float
-```
-
-**Kairos design:**
+Hermes stores everything as unstructured Markdown. DeerFlow's facts have structure but only 5 fixed categories (`preference`, `knowledge`, `context`, `behavior`, `goal`). Kairos provides a `KnowledgeSchema` base class — users define their own typed schemas per domain.
 
 ```python
-# Framework provides the interface
+# Framework
 class KnowledgeSchema(BaseModel):
-    """Base class for domain knowledge schemas."""
     id: str
     created_at: datetime
-    updated_at: datetime
 
-# Business defines the schema
+# Business
 class FaultDiagnosis(KnowledgeSchema):
     signal_name: str
     log_pattern: str
     root_cause: str
     solution: str
 
-# Framework provides the store
 store = KnowledgeStore(schema=FaultDiagnosis)
-store.insert(fault)
-results = store.query({"root_cause": "controller_overheat"})
+store.query({"root_cause": "controller_overheat"})
 ```
 
-### 3.6 Evidence Chain (Kairos Original)
+### 4.8 Evidence Chain (Kairos Original)
 
 | | Hermes | DeerFlow | Kairos |
 |---|--------|----------|--------|
-| **Step tracking** | Session transcript (flat message list) | LangGraph checkpoint (state snapshots) | Structured Case → Step → Evidence chain |
-| **Replay** | Read session log | Restore from checkpoint | Replay with step-by-step annotation |
-| **Citation** | No | No | Every conclusion cites its evidence steps |
+| **Step tracking** | Flat transcript | State snapshots (recovery) | Structured Case → Step → Evidence |
+| **Replay** | Read session log | Restore checkpoint | Annotated replay |
+| **Citation** | No | No | Conclusions cite evidence steps |
 
-**Why neither framework does this:**
+Evidence Chain is a middleware — the Agent Loop doesn't know it exists:
 
-Hermes saves full conversation transcripts but they're flat — you can't easily extract "step 3 used tool X which produced result Y which led to conclusion Z". DeerFlow's checkpoints are state snapshots for recovery, not for audit trails.
-
-**Kairos design:**
-
-```
-Evidence Chain
-├── tracker.py     # Case objects with ordered Step records
-│   Case
-│   ├── step_1: tool=rag_search, args={...}, result={...}, duration=0.3s
-│   ├── step_2: tool=log_query, args={...}, result={...}, duration=1.2s
-│   ├── step_3: tool=signal_query, args={...}, result={...}, duration=0.5s
-│   └── step_4: tool=vision_analyze, args={...}, result={...}, duration=0.8s
-│       → conclusion: "controller_overheat", confidence: 0.92
-│       → evidence: [step_2, step_3, step_4]
-└── replay.py      # Reconstruct reasoning from evidence chain
+```python
+class EvidenceTracker:
+    def wrap_tool_call(self, request, handler):
+        result = handler(request)
+        self.db.record_step(
+            case_id=self.current_case,
+            tool=request.name,
+            args=request.args,
+            result=result,
+            duration=elapsed
+        )
+        return result
 ```
 
-### 3.7 Confidence + Citation (Kairos Original)
+### 4.9 Confidence + Citation (Kairos Original)
 
 | | Hermes | DeerFlow | Kairos |
 |---|--------|----------|--------|
-| **Output confidence** | No | No (facts have confidence, outputs don't) | Every output carries confidence score |
-| **Evidence citation** | No | No | Every conclusion cites its evidence |
-| **Low-confidence handling** | No | No | Triggers clarification or human review |
+| **Output confidence** | No | Facts only, not outputs | Every output |
+| **Evidence citation** | No | No | Linked to evidence chain |
+| **Optional** | — | — | Disable via middleware config |
 
-```
-Hermes output:
-  "The root cause is a controller overheat."
+Confidence is a middleware — optional, composable:
 
-Kairos output:
-  {
-    "conclusion": "Root cause: controller overheat",
-    "confidence": 0.92,
-    "evidence": [
-      {"step": 2, "tool": "log_query", "finding": "ERR_THERMAL_001 at T+3.2s"},
-      {"step": 3, "tool": "signal_query", "finding": "temp_signal = 87.3°C"},
-      {"step": 4, "tool": "knowledge_match", "finding": "Pattern P-042: overheat"}
-    ]
-  }
+```python
+class ConfidenceScorer:
+    def after_agent(self, state, runtime):
+        score = self.evaluate(state.messages, state.evidence)
+        return {
+            "confidence": score,
+            "evidence": self.tracker.get_chain()
+        }
 ```
 
-### 3.8 Skills + Curator
+This means:
+- Diagnostic agents get confidence scores
+- Chat agents skip it entirely
+- Same framework, different configs
 
-| | Hermes | DeerFlow | Kairos |
-|---|--------|----------|--------|
-| **Skill format** | SKILL.md (YAML frontmatter + Markdown) | N/A | Same as Hermes |
-| **Lifecycle** | Curator: active → stale → archived | N/A | Same as Hermes |
-| **Evolution** | Agent patches skills when they break | N/A | Same as Hermes |
-| **Enhancement** | — | — | Skills indexed for semantic retrieval via RAG |
+### 4.10 Skills + Curator
 
-**Why Kairos keeps Hermes' approach:**
+Kairos keeps Hermes' skill system exactly, with one enhancement:
 
-Hermes' skill system is the best in class. The Curator lifecycle management (pin → stale → archive → backup) is thoughtful. Kairos adds one enhancement: skills are semantically indexed so RAG can retrieve the right skill even when not called by exact name.
+| | Hermes | Kairos |
+|---|--------|--------|
+| **Format** | SKILL.md | Same |
+| **Lifecycle** | Curator: active → stale → archived | Same |
+| **Evolution** | Agent patches broken skills | Same |
+| **Semantic retrieval** | By exact name only | ✅ RAG-indexed for semantic matching |
 
-### 3.9 Sub-Agent Factory
+### 4.11 Remaining Modules
 
-| | Hermes | DeerFlow | Kairos |
-|---|--------|----------|--------|
-| **Delegation** | `delegate_task` tool | `task` tool | `task` tool (from DeerFlow) |
-| **Types** | leaf / orchestrator | general-purpose / bash | Configurable types from DeerFlow |
-| **Tool restriction** | Via toolsets | Blacklist (gp) or whitelist (bash) | Configurable per type |
-| **Concurrency** | Configurable (default 3) | Hard capped [2,4] | Configurable with hard cap |
-| **Timeout** | None | 900s configurable | Configurable |
-| **Context** | Isolated | Isolated | Isolated |
-| **Sandbox** | Independent terminal | Shared with parent (lazy_init) | Configurable |
-| **Evidence tracking** | No | No | Each sub-agent gets its own evidence chain |
-
-**Why Kairos chose DeerFlow:**
-
-DeerFlow's typed sub-agent factory (general-purpose with full tools, bash with minimal tools) is a cleaner pattern than Hermes' toolsets approach. Kairos extends it with evidence chain inheritance — parent can see which sub-agent discovered what.
-
-### 3.10 RL Training
-
-| | Hermes | DeerFlow | Kairos |
-|---|--------|----------|--------|
-| **Framework** | Atropos integration | None | Atropos-compatible (from Hermes) |
-| **Environments** | Terminal, SWE, Web Research | None | Extensible environment registry |
-| **Trajectory format** | ShareGPT JSONL | None | Same as Hermes |
-| **ToolContext** | Post-rollout tool access for reward computation | None | Same as Hermes |
-| **Model serving** | VLLM / SGLang managed | None | Same as Hermes |
-| **Why Kairos keeps this** | An agent framework that can train the models it runs on closes the loop. This is Hermes' most unique capability and Kairos preserves it fully. |
+| Module | Source | Kairos treatment |
+|--------|--------|-----------------|
+| **Model Providers** | Hermes | OpenAI-compatible abstraction, unchanged |
+| **Session Search** | Hermes | SQLite FTS5, unchanged |
+| **Gateway (multi-platform)** | Hermes | Phase 3, unchanged |
+| **RL Training** | Hermes | Atropos-compatible, unchanged |
+| **Sandbox** | DeerFlow | Multi-provider abstraction, Phase 2 |
+| **Typed State** | DeerFlow | ThreadState pattern, Phase 1 |
+| **Context Compression** | Both | Delegated to middleware |
 
 ---
 
-## 4. What Kairos Creates That Neither Has
+## 5. Boundary: Framework vs Business
+
+| Layer | Kairos provides | Business provides |
+|-------|----------------|-------------------|
+| **Agent Loop** | while + tool dispatch | — |
+| **Middleware** | EvidenceTracker, ConfidenceScorer, ContextCompress, SkillLoader, ToolRateLimit | Custom middleware |
+| **Tools** | `rag_search`, `knowledge_lookup` | `log_query`, `signal_query`, domain tools |
+| **RAG** | VectorStore, adapters, fusion | Knowledge base content |
+| **Knowledge** | Schema base class, Store | FaultDiagnosis schema, LegalCase schema |
+| **Skills** | Loader, Curator | Skill content |
+
+---
+
+## 6. What Kairos Creates That Neither Has
 
 | Capability | Why Hermes doesn't have it | Why DeerFlow doesn't have it |
 |-----------|--------------------------|------------------------------|
-| **RAG Engine** | Knowledge is flat Markdown, no vector search | Memory is assistant context, not a searchable knowledge base |
-| **Structured Knowledge** | Skills are freeform, no typed schemas | Facts are limited to 5 fixed categories |
-| **Evidence Chain** | Sessions are transcripts, not structured traces | Checkpoints are for recovery, not audit |
-| **Confidence + Citation** | Output is plain text | Confidence exists only on facts, not outputs |
+| **RAG Engine** | Knowledge is flat Markdown, no vector search | Memory is assistant context, not a searchable KB |
+| **Structured Knowledge** | Skills are freeform | Facts limited to 5 fixed categories |
+| **Evidence Chain** | Transcripts are flat | Checkpoints are for recovery, not audit |
+| **Confidence + Citation** | Output is plain text | Confidence exists on facts, not outputs |
 
-These four capabilities are framework-level — they apply to any domain, any task, any Agent built on Kairos. They're not vehicle-diagnosis-specific. They exist because Hermes and DeerFlow were designed before the current generation of LLMs made structured reasoning tractable.
+These are **framework-level**, universal across all domains. They exist because Hermes and DeerFlow were designed before structured reasoning with citation became practical.
 
 ---
 
-## 5. MVP Scope
+## 7. MVP Scope
 
-### Phase 1 (framework foundation)
+### Phase 1 — Framework Foundation
 
 ```
 kairos/
 ├── core/
-│   ├── loop.py           # Agent Loop (Hermes)
-│   ├── middleware.py      # Middleware hooks (DeerFlow)
-│   └── state.py           # Typed state (DeerFlow)
+│   ├── loop.py              # Agent Loop (Hermes)
+│   ├── middleware.py         # 6 hook types (DeerFlow)
+│   └── state.py             # Typed state (DeerFlow)
+├── chat/                    # CLI interface (Hermes)
+│   ├── cli.py              # kairos chat / kairos run
+│   └── session.py          # Session management
 ├── tools/
-│   ├── registry.py        # Tool registry (Hermes)
-│   └── base.py            # Tool base class
-├── rag/                   # RAG Engine (Kairos)
-│   ├── retriever.py
-│   └── store.py
-├── knowledge/             # Structured Knowledge (Kairos)
-│   ├── schema.py
-│   └── store.py
-├── evidence/              # Evidence Chain (Kairos)
-│   ├── tracker.py
-│   └── chain.py
-├── confidence/            # Confidence + Citation (Kairos)
-│   └── scorer.py
+│   ├── registry.py          # Tool registry (Hermes)
+│   ├── base.py
+│   ├── rag_search.py        # RAG retrieval tool
+│   └── knowledge_lookup.py  # Knowledge query tool
+├── middleware/
+│   ├── evidence.py          # Evidence Chain (Kairos)
+│   ├── confidence.py        # Confidence + Citation (Kairos)
+│   ├── compress.py          # Context compression
+│   └── skill_loader.py      # Skill loading
+├── agents/                  # Sub-Agent factory (DeerFlow)
+│   ├── factory.py
+│   ├── types.py
+│   └── executor.py
+├── infra/                   # Infrastructure (Kairos)
+│   ├── rag/
+│   │   ├── vector_store.py
+│   │   └── adapters/
+│   ├── knowledge/
+│   │   ├── schema.py
+│   │   └── store.py
+│   └── evidence/
+│       └── tracker.py
 ├── providers/
-│   └── base.py            # Model abstraction
-├── cli.py                 # Entry point
+│   └── base.py              # Model abstraction
+├── cli.py                   # Entry point: kairos command
 └── pyproject.toml
 ```
 
-### Phase 2 (advanced capabilities)
+### Phase 2 — Advanced
 
 ```
-+ skills/manager.py        # Skills + Curator (Hermes)
-+ memory/store.py          # Persistent memory
-+ session/search.py        # Session search (Hermes)
-+ agents/factory.py        # Sub-agent factory (DeerFlow)
-+ middleware/builtins/      # 5+ middleware layers
-+ sandbox/                 # Sandbox abstraction (DeerFlow)
++ skills/                    # Skills + Curator (Hermes)
++ memory/                    # Persistent memory
++ session/                   # Session search (Hermes)
++ sandbox/                   # Sandbox abstraction (DeerFlow)
 ```
 
-### Phase 3 (production)
+### Phase 3 — Production
 
 ```
-+ gateway/platforms/       # Multi-platform (Hermes)
-+ training/env.py          # RL training (Hermes)
-+ context/compressor.py    # Context compression (Hermes + DeerFlow)
++ gateway/                   # Multi-platform (Hermes)
++ training/                  # RL training (Hermes)
 ```
