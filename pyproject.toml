@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kairos-agent"
+version = "0.1.0"
+description = "Kairos — The right tool, at the right moment. An AI agent framework."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [{name = "buer103"}]
+keywords = ["ai", "agent", "llm", "rag", "framework"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "openai>=1.0.0",
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+rag = ["chromadb>=0.4.0"]
+all = ["kairos-agent[rag]"]
+
+[project.scripts]
+kairos = "kairos.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["kairos*"]

@@ -5,74 +5,96 @@
 
 ---
 
-**Kairos** is an AI agent framework that combines the best ideas from
-[Hermes](https://github.com/NousResearch/hermes-agent),
-[DeerFlow](https://github.com/bytedance/deer-flow), and
-[Claude Code](https://github.com/anthropics/claude-code).
+**Kairos** is an AI agent framework that inherits from
+[Hermes](https://github.com/NousResearch/hermes-agent) and
+[DeerFlow](https://github.com/bytedance/deer-flow),
+adding four original capabilities neither provides.
 
-Named after the ancient Greek word for *the decisive moment* — the
-instant when an archer releases the bowstring. An agent should act not
-just whenever it can, but exactly when it should.
+Named after the ancient Greek word for *the decisive moment* —
+the instant when an archer releases the bowstring.
 
-## 🎯 Design Philosophy
+## 🎯 Design
 
-> **Hermes** taught us that agents should learn from experience.  
-> **DeerFlow** taught us that cross-cutting concerns deserve a pipeline.  
-> **Claude Code** taught us that permission boundaries matter.
+| From | What |
+|------|------|
+| **Hermes** | Agent Loop, Tool Registry, Chat CLI, Skills+Curator, Session Search, Gateway, RL Training, Model Providers |
+| **DeerFlow** | Middleware Pipeline, Sub-Agent Factory, Sandbox, Typed State, Context Compression |
+| **Kairos (new)** | RAG Engine, Structured Knowledge, Evidence Chain, Confidence+Citation, Customizable System Prompt |
 
-Kairos weaves these together into three core principles:
-
-| Principle | What it means |
-|-----------|--------------|
-| **Learn at the right moment** | Skills that evolve with use, not one-shot prompts |
-| **Intercept at the right stage** | A middleware pipeline that keeps the core loop clean |
-| **Control at the right boundary** | Fine-grained permissions, not just a yolo switch |
-
-## 🏗️ Architecture (planned)
+## 🏗️ Architecture
 
 ```
 User Message
     │
     ▼
-┌──────────────────────┐
-│   Middleware Pipeline │  ← DeerFlow-inspired hooks
-│   (before/after/wrap) │
-├──────────────────────┤
-│   Agent Loop          │  ← Hermes-style while + tool calling
-│   (think → act → repeat) │
-├──────────────────────┤
-│   Tool Registry       │  ← Self-registering tools
-├──────────────────────┤
-│   Model Providers     │  ← OpenAI-compatible abstraction
-├──────────────────────┤
-│   Memory & Skills     │  ← Persistent, evolving knowledge
-│   + Curator           │     with automatic lifecycle management
-└──────────────────────┘
-    │
-    ▼
-Final Response
+┌──────────────────────────────────────────────┐
+│              Middleware Pipeline              │
+│  SkillLoader → EvidenceTracker → Compress    │
+│  → ToolRateLimit → ConfidenceScorer          │
+├──────────────────────────────────────────────┤
+│              Agent Loop (ReAct)               │
+│         think → tool_call → observe           │
+├──────────────┬───────────────────────────────┤
+│  Tool Registry│     Infrastructure           │
+│  (self-reg)  │  RAG Engine · Knowledge Store │
+│              │  Evidence DB · Vector Store   │
+├──────────────┴───────────────────────────────┤
+│  Model Providers · Session Search · Gateway  │
+│  Skills+Curator · Sub-Agent · RL Training    │
+└──────────────────────────────────────────────┘
 ```
+
+## 🚀 Quick Start (coming soon)
+
+```bash
+pip install kairos
+
+# Interactive chat
+kairos chat
+
+# Single query
+kairos run "Diagnose the fault in log.txt"
+
+# With your own tools
+kairos chat --tools my_tools.py --knowledge my_schema.py
+```
+
+```python
+from kairos import Agent
+
+agent = Agent(
+    tools=[my_log_tool, my_signal_tool],
+    knowledge=MyDiagnosisSchema,
+    middlewares=["evidence", "confidence"]
+)
+
+result = agent.run("Diagnose log-20260508.txt")
+print(result.conclusion)   # "controller_overheat"
+print(result.confidence)   # 0.92
+print(result.evidence)     # [Step1, Step2, Step3]
+```
+
+## 📖 Full Architecture
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — 18 modules, full comparison
+matrix against Hermes and DeerFlow, three-layer classification, and MVP breakdown.
 
 ## 🚧 Status
 
-**Pre-alpha — architecture design in progress.**
+**Pre-alpha — implementing Phase 1 modules.**
 
-Currently studying the source code of Hermes, DeerFlow, and Claude Code
-to extract the best patterns from each.
-
-## 📖 The Name
-
-*Kairos* (καιρός) vs *Chronos* (χρόνος):
-
-- **Chronos** is clock time — sequential, quantitative, ticking forward.
-- **Kairos** is the opportune moment — qualitative, decisive, the right
-  instant to act.
-
-An agent framework shouldn't just process messages in sequence.  
-It should recognize *when* to act, *what* to call, and *how* to learn.
+- [x] Architecture design
+- [ ] `core/` — Agent Loop, Middleware hooks, Typed State
+- [ ] `providers/` — Model abstraction
+- [ ] `tools/` — Self-registering registry
+- [ ] `chat/` — CLI interface
+- [ ] `prompt/` — System prompt engine
+- [ ] `infra/` — RAG, Knowledge Store, Evidence DB
+- [ ] `middleware/` — Evidence, Confidence, Compress
+- [ ] `agents/` — Sub-Agent factory
 
 ---
 
 <p align="center">
-  <sub>Built with ❤️ by <a href="https://github.com/buer103">buer103</a></sub>
+  <sub>Built by <a href="https://github.com/buer103">buer103</a></sub>
 </p>
