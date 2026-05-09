@@ -136,10 +136,11 @@ def test_memory_format_for_prompt():
 
 def test_memory_middleware_injection():
     import tempfile, os
+    from kairos.memory.backends import SQLiteBackend
     td = tempfile.mkdtemp()
-    store = MemoryStore(db_path=os.path.join(td, "test.db"))
-    store.add("user", "name", "buer103")
-    mw = MemoryMiddleware(memory_store=store)
+    backend = SQLiteBackend(db_path=os.path.join(td, "test.db"))
+    backend.save("user:name", "buer103", category="user")
+    mw = MemoryMiddleware(backend=backend)
     state = ThreadState()
     state.messages = [{"role": "system", "content": "You are helpful."}]
     mw.before_agent(state, {})

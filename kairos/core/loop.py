@@ -269,7 +269,7 @@ class Agent:
         if is_plan_mode:
             layers.append(TodoMiddleware())
         if memory_store:
-            layers.append(MemoryMiddleware(memory_store=memory_store))
+            layers.append(MemoryMiddleware(backend=memory_store))
         if supports_vision:
             layers.append(ViewImageMiddleware(supports_vision=True))
         layers.extend([EvidenceTracker(), ToolArgRepairMiddleware()])
