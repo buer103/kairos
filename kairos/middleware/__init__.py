@@ -34,6 +34,7 @@ from kairos.middleware.uploads import UploadsMiddleware
 from kairos.middleware.view_image import ViewImageMiddleware
 from kairos.middleware.llm_retry import LLMRetryMiddleware, ToolArgRepairMiddleware
 from kairos.middleware.logging_mw import LoggingMiddleware
+from kairos.middleware.sandbox_mw import SandboxMiddleware
 
 # Re-export MemoryMiddleware from memory package
 from kairos.memory.middleware import MemoryMiddleware
@@ -55,5 +56,6 @@ __all__ = [
     "LLMRetryMiddleware",
     "ToolArgRepairMiddleware",
     "LoggingMiddleware",
+    "SandboxMiddleware",
     "MemoryMiddleware",
 ]

@@ -3,7 +3,7 @@ Kairos — The right tool, at the right moment.
 An AI agent framework inheriting from Hermes and DeerFlow.
 """
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 from kairos.core.loop import Agent
 from kairos.core.stateful_agent import StatefulAgent
@@ -44,6 +44,15 @@ from kairos.training import (
     reward_confidence, reward_success_rate, reward_evidence_quality, reward_file_creation,
 )
 
+# Phase 4 — Cron, Rich TUI, Sandbox middleware, Delegation
+from kairos.cron import CronScheduler, Job, CronSchedule, JobStatus
+from kairos.cli import KairosConsole, SKINS
+from kairos.middleware.sandbox_mw import SandboxMiddleware
+from kairos.agents.delegate import (
+    DelegateTask, DelegateResult, DelegateConfig,
+    DelegationManager, SubAgent, register_delegate_tool,
+)
+
 __all__ = [
     "Agent", "StatefulAgent",
     "register_tool", "__version__",
@@ -61,4 +70,9 @@ __all__ = [
     "TrajectoryRecorder", "ToolContext",
     "TrainingEnv", "EnvironmentRegistry", "RolloutRunner",
     "reward_confidence", "reward_success_rate", "reward_evidence_quality", "reward_file_creation",
+    "CronScheduler", "Job", "CronSchedule", "JobStatus",
+    "KairosConsole", "SKINS",
+    "SandboxMiddleware",
+    "DelegateTask", "DelegateResult", "DelegateConfig",
+    "DelegationManager", "SubAgent", "register_delegate_tool",
 ]

@@ -1088,3 +1088,208 @@ def test_stateful_agent_interrupt(tmp_path):
     agent.interrupt()
     result = agent.chat("hello")
     assert result["content"] == "[Interrupted]"
+
+
+# ═══════════════════════════════════════════════════════════════
+# Phase 6 — Cron, Rich TUI, Sandbox wiring, Delegation
+# ═══════════════════════════════════════════════════════════════
+
+class TestCronScheduler:
+    def test_register_and_list(self, tmp_path):
+        from kairos.cron import CronScheduler, Job, CronSchedule
+        db = tmp_path / "cron.db"
+        s = CronScheduler(db_path=str(db))
+        j = Job(name="daily", schedule=CronSchedule.daily_at(9, 0))
+        s.register(j)
+        jobs = s.list()
+        assert len(jobs) == 1
+        assert jobs[0].name == "daily"
+
+    def test_pause_resume(self, tmp_path):
+        from kairos.cron import CronScheduler, Job, CronSchedule, JobStatus
+        db = tmp_path / "cron.db"
+        s = CronScheduler(db_path=str(db))
+        j = s.register(Job(name="test"))
+        assert s.pause(j.id).status == JobStatus.PAUSED
+        assert s.resume(j.id).status == JobStatus.PENDING
+
+    def test_cancel(self, tmp_path):
+        from kairos.cron import CronScheduler, Job, CronSchedule, JobStatus
+        db = tmp_path / "cron.db"
+        s = CronScheduler(db_path=str(db))
+        j = s.register(Job(name="test"))
+        assert s.cancel(j.id).status == JobStatus.CANCELLED
+
+    def test_remove(self, tmp_path):
+        from kairos.cron import CronScheduler, Job
+        db = tmp_path / "cron.db"
+        s = CronScheduler(db_path=str(db))
+        j = s.register(Job(name="removable"))
+        s.remove(j.id)
+        assert len(s.list()) == 0
+
+    def test_schedule_matches(self):
+        from kairos.cron import CronSchedule
+        from datetime import datetime, timezone
+        sched = CronSchedule.daily_at(9, 0)
+        dt = datetime(2026, 1, 5, 9, 0, tzinfo=timezone.utc)
+        assert sched.matches(dt)
+        assert not sched.matches(datetime(2026, 1, 5, 10, 0, tzinfo=timezone.utc))
+
+    def test_schedule_weekly(self):
+        from kairos.cron import CronSchedule
+        from datetime import datetime, timezone
+        sched = CronSchedule.weekly_on(0, 9, 0)  # Monday 9:00
+        mon = datetime(2026, 1, 5, 9, 0, tzinfo=timezone.utc)  # Monday
+        tue = datetime(2026, 1, 6, 9, 0, tzinfo=timezone.utc)  # Tuesday
+        assert sched.matches(mon)
+        assert not sched.matches(tue)
+
+    def test_tick_fires_due_jobs(self, tmp_path):
+        from kairos.cron import CronScheduler, Job, CronSchedule
+        from datetime import datetime, timezone
+        db = tmp_path / "cron.db"
+        s = CronScheduler(db_path=str(db))
+        now = datetime.now(timezone.utc)
+        sched = CronSchedule(minute=[now.minute], hour=[now.hour])
+        j = s.register(Job(name="immediate", schedule=sched))
+        # Tick fires jobs that match current time
+        fired = s.tick()
+        assert len(fired) >= 1
+        updated = s.get(j.id)
+        assert updated.run_count >= 1
+
+    def test_repeat_limit(self, tmp_path):
+        from kairos.cron import CronScheduler, Job, CronSchedule
+        from datetime import datetime, timezone
+        db = tmp_path / "cron.db"
+        s = CronScheduler(db_path=str(db))
+        now = datetime.now(timezone.utc)
+        sched = CronSchedule(minute=[now.minute], hour=[now.hour])
+        j = s.register(Job(name="limited", schedule=sched, repeat=1))
+        s.tick()
+        j = s.get(j.id)
+        assert j.run_count == 1
+        assert j.status.value == "done"
+        # Tick again — should not re-fire (repeat=1 reached)
+        fired = s.tick()
+        assert len(fired) == 0
+
+    def test_next_fire(self):
+        from kairos.cron import CronSchedule
+        from datetime import datetime, timezone, timedelta
+        sched = CronSchedule.daily_at(12, 0)
+        now = datetime(2026, 1, 5, 8, 0, tzinfo=timezone.utc)
+        nxt = sched.next_fire(now)
+        assert nxt.hour == 12
+        assert nxt.day == 5
+        assert nxt > now
+
+
+class TestKairosConsole:
+    def test_init(self):
+        from kairos.cli import KairosConsole
+        c = KairosConsole(skin="default")
+        assert c.skin_name == "default"
+        assert not c.verbose
+
+    def test_set_skin(self):
+        from kairos.cli import KairosConsole
+        c = KairosConsole(skin="default")
+        assert c.set_skin("hacker")
+        assert c.skin_name == "hacker"
+        assert not c.set_skin("nonexistent")
+
+    def test_history_tracks(self):
+        from kairos.cli import KairosConsole
+        c = KairosConsole(verbose=False)
+        c.user_input("hello")
+        c.agent_output("hi there", confidence=0.95)
+        assert len(c._history) == 2
+        assert c._history[0]["role"] == "user"
+        assert c._history[1]["role"] == "agent"
+        assert c._history[1]["confidence"] == 0.95
+
+    def test_verbose_tool_call(self, capsys):
+        from kairos.cli import KairosConsole
+        c = KairosConsole(verbose=True)
+        c.tool_call("read_file", {"path": "/tmp/x"}, {"content": "abc"}, duration_ms=42)
+        captured = capsys.readouterr()
+        assert "read_file" in captured.out
+        assert "42ms" in captured.out
+
+
+class TestSandboxMiddleware:
+    def test_passthrough_no_sandbox(self):
+        from kairos.middleware import SandboxMiddleware
+        mw = SandboxMiddleware()
+        assert not mw.is_active
+        # Should passthrough
+        called = []
+        def original(name, args):
+            called.append(name)
+            return {"stdout": "ok"}
+        result = mw.wrap_tool_call("terminal", {"command": "echo hi"}, original)
+        assert result["stdout"] == "ok"
+        assert called == ["terminal"]
+
+    def test_local_sandbox_intercept(self):
+        from kairos.middleware import SandboxMiddleware
+        from kairos.sandbox.providers import SandboxConfig, SandboxProvider
+        config = SandboxConfig(provider=SandboxProvider.LOCAL)
+        mw = SandboxMiddleware(sandbox_config=config)
+        # Local sandbox wraps terminal calls
+        result = mw.wrap_tool_call(
+            "terminal",
+            {"command": "echo hello"},
+            lambda n, a: {"stdout": "passthrough"},
+        )
+        assert "hello" in result.get("stdout", "")
+        assert result.get("exit_code") == 0
+
+    def test_non_terminal_passthrough(self):
+        from kairos.middleware import SandboxMiddleware
+        from kairos.sandbox.providers import SandboxConfig, SandboxProvider
+        config = SandboxConfig(provider=SandboxProvider.LOCAL)
+        mw = SandboxMiddleware(sandbox_config=config)
+        called = []
+        result = mw.wrap_tool_call(
+            "read_file",
+            {"path": "/tmp/x"},
+            lambda n, a: called.append(n) or {"ok": True},
+        )
+        assert called == ["read_file"]
+
+
+class TestDelegation:
+    def test_delegate_task(self):
+        from kairos.agents.delegate import DelegateTask
+        t = DelegateTask(goal="test", context="test context")
+        assert t.goal == "test"
+        assert t.context == "test context"
+        assert t.id.startswith("subtask_")
+
+    def test_delegate_result(self):
+        from kairos.agents.delegate import DelegateResult
+        r = DelegateResult(task_id="t1", success=True, content="done")
+        assert r.success
+        assert r.content == "done"
+
+    def test_delegate_config(self):
+        from kairos.agents.delegate import DelegateConfig
+        cfg = DelegateConfig(max_concurrent=5, default_timeout=60)
+        assert cfg.max_concurrent == 5
+        assert cfg.default_timeout == 60
+
+    def test_delegation_manager_init(self):
+        from kairos.agents.delegate import DelegationManager, DelegateConfig
+        mgr = DelegationManager(model=None, config=DelegateConfig(max_concurrent=2))
+        assert mgr.config.max_concurrent == 2
+
+    def test_register_delegate_tool(self):
+        from kairos.agents.delegate import DelegationManager, register_delegate_tool, DelegateConfig
+        from kairos.tools.registry import get_all_tools
+        mgr = DelegationManager(model=None, config=DelegateConfig())
+        register_delegate_tool(mgr)
+        tools = get_all_tools()  # returns dict[str, dict]
+        assert "delegate_task" in tools
