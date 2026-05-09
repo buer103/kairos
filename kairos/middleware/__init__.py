@@ -26,7 +26,9 @@ Optional plug-ins:
 
 from kairos.middleware.evidence import EvidenceTracker
 from kairos.middleware.confidence import ConfidenceScorer
-from kairos.middleware.compress import ContextCompressor
+from kairos.middleware.compress import ContextCompressor, BeforeCompressionHook
+from kairos.middleware.trajectory_compressor import TrajectoryCompressor, SummaryBlock, CompressionStats
+from kairos.middleware.importance_scorer import ImportanceScorer, RetentionPolicy
 from kairos.middleware.skill_loader import SkillLoader, Skill
 from kairos.middleware.dangling import DanglingToolCallMiddleware
 from kairos.middleware.subagent_limit import SubagentLimitMiddleware
@@ -48,6 +50,12 @@ __all__ = [
     "EvidenceTracker",
     "ConfidenceScorer",
     "ContextCompressor",
+    "BeforeCompressionHook",
+    "TrajectoryCompressor",
+    "SummaryBlock",
+    "CompressionStats",
+    "ImportanceScorer",
+    "RetentionPolicy",
     "SkillLoader",
     "Skill",
     "DanglingToolCallMiddleware",

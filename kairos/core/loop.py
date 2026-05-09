@@ -395,6 +395,9 @@ class Agent:
         from kairos.skills.manager import SkillManager
         set_skill_manager(SkillManager(skills_dir))
 
+        # ---- Tool whitelist (for sub-agent toolsets isolation) ----
+        self._tool_whitelist: set[str] | None = set(tools) if tools else None
+
         # ---- Pipeline ----
         self.pipeline = MiddlewarePipeline(middlewares or [])
 
@@ -491,7 +494,14 @@ class Agent:
 
             self.pipeline.before_model(state, runtime)
 
-            tool_schemas = get_tool_schemas() or None
+            tool_schemas_raw = get_tool_schemas() or []
+            if self._tool_whitelist is not None:
+                tool_schemas = [
+                    s for s in tool_schemas_raw
+                    if s["function"]["name"] in self._tool_whitelist
+                ] or None
+            else:
+                tool_schemas = tool_schemas_raw or None
 
             # ---- Credential acquire ----
             self._acquire_credential()

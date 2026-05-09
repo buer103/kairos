@@ -48,8 +48,17 @@ RESEARCH = SubAgentType(
     system_prompt="You are a research specialist. Search thoroughly and cite sources.",
 )
 
+ORCHESTRATOR = SubAgentType(
+    name="orchestrator",
+    description="Plans and delegates work to child sub-agents",
+    tools=["task", "task_batch"],
+    max_turns=10,
+    timeout_seconds=600,
+)
+
 BUILTIN_TYPES: dict[str, SubAgentType] = {
     "general-purpose": GENERAL_PURPOSE,
     "bash": BASH,
     "research": RESEARCH,
+    "orchestrator": ORCHESTRATOR,
 }

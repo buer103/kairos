@@ -24,6 +24,12 @@ import re
 from typing import Any, Callable
 
 from kairos.core.middleware import Middleware
+from kairos.middleware.trajectory_compressor import TrajectoryCompressor, CompressionStats
+from kairos.middleware.importance_scorer import (
+    ImportanceScorer,
+    RetentionPolicy,
+    count_msg_tokens,
+)
 
 logger = logging.getLogger("kairos.middleware.compress")
 
@@ -96,6 +102,10 @@ class ContextCompressor(Middleware):
         llm_summarize: bool = False,
         summarize_model: Any = None,  # ModelProvider for LLM summaries
         track_compression: bool = True,
+        # ── New trajectory compressor + importance scorer options ──
+        use_trajectory_compressor: bool = False,
+        use_importance_scorer: bool = False,
+        importance_scorer_policy: RetentionPolicy | None = None,
     ):
         self.max_tokens = max_tokens
         self.budget_ratio = budget_ratio
@@ -107,6 +117,25 @@ class ContextCompressor(Middleware):
         self.track_compression = track_compression
         self._stats: list[dict] = []
         self._hooks: list[BeforeCompressionHook] = []
+
+        # ── New: trajectory compressor + importance scorer ──────
+        self.use_trajectory_compressor = use_trajectory_compressor
+        self.use_importance_scorer = use_importance_scorer
+        self._trajectory_compressor: TrajectoryCompressor | None = None
+        self._importance_scorer: ImportanceScorer | None = None
+
+        if use_trajectory_compressor:
+            self._trajectory_compressor = TrajectoryCompressor(
+                keep_recent=keep_recent,
+                max_summary_tokens=max(200, budget_ratio * max_tokens // 20),
+                summarize_model=summarize_model if llm_summarize else None,
+                track_stats=track_compression,
+            )
+
+        if use_importance_scorer:
+            self._importance_scorer = ImportanceScorer(
+                policy=importance_scorer_policy or RetentionPolicy()
+            )
 
     # ── Hook registration ──────────────────────────────────────
 
@@ -129,6 +158,10 @@ class ContextCompressor(Middleware):
             if self.track_compression:
                 self._record("passthrough", total, total, 0, runtime)
             return None
+
+        # ── NEW PATH: trajectory compressor + importance scorer ──
+        if self.use_trajectory_compressor and self._trajectory_compressor:
+            return self._compress_via_trajectory(messages, total, budget, runtime)
 
         # ── Tier 1: tool output truncation ───────────────────
         if total <= budget:
@@ -241,6 +274,88 @@ class ContextCompressor(Middleware):
             "blocks_kept": len(kept_blocks),
             "blocks_summarized": len(summarized_blocks),
         }
+
+    # ═══════════════════════════════════════════════════════════
+    # Trajectory-based compression (new, tier 2 + 3)
+    # ═══════════════════════════════════════════════════════════
+
+    def _compress_via_trajectory(
+        self,
+        messages: list[dict],
+        total: int,
+        budget: int,
+        runtime: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Compress using ImportanceScorer + TrajectoryCompressor.
+
+        Tier 2 (100-150% budget): heuristic trajectory compression.
+        Tier 3 (> 150% budget): LLM-powered trajectory compression.
+        """
+        tc = self._trajectory_compressor
+        if tc is None:
+            return None
+
+        # ── Tier detection ────────────────────────────────────
+        if total <= budget:
+            # We're between 50% and 100% — do tool truncation + mild compression.
+            saved = self._truncate_tool_outputs(messages)
+            new_total = self._count_messages(messages)
+            if self.track_compression:
+                self._record("tool_truncation", total, new_total, saved, runtime)
+            return {"compressed_before": total, "compressed_after": new_total}
+
+        tier2 = total <= budget * 1.5
+        tier_label = "tier2_trajectory" if tier2 else "tier3_trajectory_llm"
+
+        # ── Optional: ImportanceScorer pre-filter ─────────────
+        importance_stats: dict[str, Any] = {}
+        if self.use_importance_scorer and self._importance_scorer:
+            # Allocate half the budget to important messages, rest for compression.
+            selection_budget = budget // 2
+            before_filter = len(messages)
+            selected = self._importance_scorer.select_messages(
+                messages, selection_budget, token_counter=count_msg_tokens,
+            )
+            # Replace messages in place so TrajectoryCompressor sees the selection.
+            messages.clear()
+            messages.extend(selected)
+            importance_stats = dict(self._importance_scorer.last_stats)
+            importance_stats["messages_before_filter"] = before_filter
+
+        # ── Trajectory compression ────────────────────────────
+        if tier2:
+            # Tier 2: heuristic summarization.
+            tc._summarize_model = None  # force heuristic
+        else:
+            # Tier 3: use LLM for summarization if available.
+            tc._summarize_model = self._summarize_model if self.llm_summarize else None
+
+        before = sum(count_msg_tokens(m) for m in messages)
+        tc.compress(messages)
+        after = sum(count_msg_tokens(m) for m in messages)
+        tc_stats = tc.stats.to_dict()
+
+        if self.track_compression:
+            self._record(
+                tier_label,
+                total,
+                after,
+                max(0, total - after),
+                runtime,
+                trajectory_stats=tc_stats,
+                importance_stats=importance_stats,
+            )
+
+        result: dict[str, Any] = {
+            "compressed_before": total,
+            "compressed_after": after,
+            "tier": tier_label,
+            "trajectory_stats": tc_stats,
+        }
+        if importance_stats:
+            result["importance_stats"] = importance_stats
+
+        return result
 
     def _build_summary(self, blocks: list[list[dict]]) -> str:
         """Build a summary of compressed blocks.
@@ -426,18 +541,30 @@ class ContextCompressor(Middleware):
         return total
 
     def _record(self, strategy: str, before: int, after: int, saved: int,
-                runtime: dict[str, Any]) -> None:
+                runtime: dict[str, Any],
+                trajectory_stats: dict | None = None,
+                importance_stats: dict | None = None) -> None:
         """Record compression stats with session context."""
         ratio = (saved / before * 100) if before > 0 else 0
-        self._stats.append({
+        compression_ratio = (after / before) if before > 0 else 1.0
+        entry: dict[str, Any] = {
             "strategy": strategy,
             "before": before,
             "after": after,
             "saved": saved,
             "ratio_pct": round(ratio, 2),
+            "compression_ratio": round(compression_ratio, 4),
             "thread_id": runtime.get("thread_id", ""),
             "timestamp": __import__("time").time(),
-        })
+        }
+        if trajectory_stats:
+            entry["trajectory"] = trajectory_stats
+            entry["messages_retained"] = trajectory_stats.get("messages_compressed", 0)
+        if importance_stats:
+            entry["importance"] = importance_stats
+            entry["avg_importance"] = importance_stats.get("avg_importance_kept", 0.0)
+            entry["messages_retained"] = importance_stats.get("messages_retained", entry.get("messages_retained", 0))
+        self._stats.append(entry)
 
     @property
     def stats(self) -> list[dict[str, Any]]:
@@ -447,5 +574,7 @@ class ContextCompressor(Middleware):
         return (
             f"ContextCompressor(max_tokens={self.max_tokens}, "
             f"budget_ratio={self.budget_ratio}, keep_recent={self.keep_recent}, "
-            f"tiktoken={HAS_TIKTOKEN}, llm={self.llm_summarize})"
+            f"tiktoken={HAS_TIKTOKEN}, llm={self.llm_summarize}, "
+            f"trajectory={self.use_trajectory_compressor}, "
+            f"importance_scorer={self.use_importance_scorer})"
         )
