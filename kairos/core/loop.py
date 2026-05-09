@@ -19,14 +19,110 @@ class Agent:
     """The core Kairos agent.
 
     Usage:
-        agent = Agent(
-            model=ModelConfig(api_key="...", base_url="...", model="deepseek-chat"),
-            middlewares=[EvidenceTracker(), ConfidenceScorer(), ContextCompressor()],
+        # Minimal
+        agent = Agent(model=ModelConfig(api_key="..."))
+
+        # Full pipeline (14 layers, DeerFlow-compatible)
+        agent = Agent.build_default(
+            model=ModelConfig(api_key="..."),
             agent_name="MyAgent",
-            role_description="You help with database queries.",
         )
         result = agent.run("What's the schema for the users table?")
     """
+
+    @classmethod
+    def build_default(
+        cls,
+        model: ModelConfig,
+        agent_name: str = "Kairos",
+        role_description: str = "You are a helpful AI assistant.",
+        max_iterations: int = 20,
+        rag_store: Any = None,
+        knowledge_stores: dict[str, Any] | None = None,
+        skills_dir: str | None = None,
+        memory_store: Any = None,
+        supports_vision: bool = False,
+        is_plan_mode: bool = False,
+        **template_vars,
+    ) -> Agent:
+        """Build an Agent with the full 14-layer DeerFlow-compatible pipeline.
+
+        Middleware order (matching DeerFlow dependency chain):
+          1. ThreadData         — workspace dirs
+          2. Uploads            — file injection
+          3. DanglingToolCall   — fix broken tool calls
+          4. SkillLoader        — load skills
+          5. ContextCompressor  — token budget compression
+          6. Todo               — todo persistence (if plan_mode)
+          7. Memory             — persistent memory injection
+          8. ViewImage          — vision model support (if supports_vision)
+          9. EvidenceTracker    — record evidence steps
+         10. ConfidenceScorer   — score output quality
+         11. SubagentLimit      — cap concurrent sub-agents
+         12. Title              — auto-generate title
+         13. MemoryMiddleware   — submit to memory queue
+         14. Clarification      — intercept ask_user (MUST be last)
+        """
+        from kairos.middleware import (
+            ThreadDataMiddleware,
+            UploadsMiddleware,
+            DanglingToolCallMiddleware,
+            SkillLoader,
+            ContextCompressor,
+            TodoMiddleware,
+            ConfidenceScorer,
+            EvidenceTracker,
+            SubagentLimitMiddleware,
+            TitleMiddleware,
+            ClarificationMiddleware,
+            ViewImageMiddleware,
+            MemoryMiddleware,
+        )
+
+        layers: list[Middleware] = [
+            ThreadDataMiddleware(),
+            UploadsMiddleware(),
+            DanglingToolCallMiddleware(),
+        ]
+
+        if skills_dir:
+            layers.append(SkillLoader(skills_dir=skills_dir))
+
+        layers.append(ContextCompressor())
+
+        if is_plan_mode:
+            layers.append(TodoMiddleware())
+
+        if memory_store:
+            layers.append(MemoryMiddleware(memory_store=memory_store))
+
+        if supports_vision:
+            layers.append(ViewImageMiddleware(supports_vision=True))
+
+        layers.extend([
+            EvidenceTracker(),
+            ConfidenceScorer(),
+            SubagentLimitMiddleware(),
+            TitleMiddleware(),
+        ])
+
+        if memory_store:
+            layers.append(MemoryMiddleware(memory_store=memory_store))
+
+        # Clarification MUST be last
+        layers.append(ClarificationMiddleware())
+
+        return cls(
+            model=model,
+            middlewares=layers,
+            agent_name=agent_name,
+            role_description=role_description,
+            max_iterations=max_iterations,
+            rag_store=rag_store,
+            knowledge_stores=knowledge_stores,
+            skills_dir=skills_dir,
+            **template_vars,
+        )
 
     def __init__(
         self,

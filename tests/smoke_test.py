@@ -804,3 +804,132 @@ def test_reward_file_creation(tmp_path):
     ctx2.snapshot_before()
     ctx2.snapshot_after()
     assert reward_file_creation({}, ctx2) == 0.0
+
+
+# ── Middleware Expansion (DeerFlow layers) ──────────────────────
+
+from kairos.middleware.dangling import DanglingToolCallMiddleware
+from kairos.middleware.subagent_limit import SubagentLimitMiddleware
+from kairos.middleware.clarify import ClarificationMiddleware
+from kairos.middleware.thread_data import ThreadDataMiddleware
+from kairos.middleware.todo import TodoMiddleware
+from kairos.middleware.title import TitleMiddleware
+from kairos.middleware.uploads import UploadsMiddleware
+from kairos.middleware.view_image import ViewImageMiddleware
+
+
+def test_dangling_tool_call_fix():
+    mw = DanglingToolCallMiddleware()
+    messages = [
+        {"role": "user", "content": "test"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "tc1", "function": {"name": "view_image", "arguments": "{}"}},
+        ]},
+    ]
+    patched = mw._patch(messages)
+    # Should have inserted a synthetic ToolMessage
+    assert any(m.get("tool_call_id") == "tc1" for m in patched)
+    assert any("interrupted" in m.get("content", "").lower() for m in patched)
+
+
+def test_dangling_tool_call_no_dangle():
+    mw = DanglingToolCallMiddleware()
+    messages = [
+        {"role": "user", "content": "test"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "tc1", "function": {"name": "search", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "tc1", "content": "result"},
+    ]
+    patched = mw._patch(messages)
+    assert patched == messages  # No changes
+
+
+def test_clarification_intercept():
+    mw = ClarificationMiddleware()
+    result = mw.wrap_tool_call(
+        "ask_user",
+        {"question": "Which file should I analyze?", "options": ["a.txt", "b.txt"]},
+        lambda n, a, **kw: {"ok": True},
+    )
+    assert result.get("clarification") is True
+    assert "a.txt" in result.get("formatted", "")
+    assert mw.is_clarifying
+    assert "Which file" in mw.question
+
+
+def test_clarification_pass_through():
+    mw = ClarificationMiddleware()
+    result = mw.wrap_tool_call(
+        "rag_search", {"query": "test"},
+        lambda n, a, **kw: {"results": []},
+    )
+    assert result == {"results": []}  # Non-clarification tools pass through
+
+
+def test_thread_data_middleware():
+    import tempfile, os
+    td = tempfile.mkdtemp()
+    mw = ThreadDataMiddleware(base_dir=td, lazy_init=True)
+    from kairos.core.state import ThreadState
+    state = ThreadState()
+    state.messages = [{"role": "system", "content": "You are helpful."}]
+    runtime = {"thread_id": "test-thread"}
+    mw.before_agent(state, runtime)
+    assert "thread_data" in state.metadata
+    assert "workspace_dir" in state.metadata["thread_data"]
+    assert "Workspace" in state.messages[0]["content"]
+
+
+def test_todo_middleware_set_get():
+    mw = TodoMiddleware()
+    todos = [
+        {"content": "Analyze logs", "status": "pending"},
+        {"content": "Write report", "status": "pending"},
+    ]
+    mw.set_todos(todos)
+    assert len(mw.get_todos()) == 2
+    assert mw.get_todos()[0]["content"] == "Analyze logs"
+
+
+def test_title_middleware(tmp_path):
+    import tempfile, os
+    mw = TitleMiddleware()
+    from kairos.core.state import ThreadState
+    state = ThreadState()
+    state.messages = [
+        {"role": "user", "content": "Help me fix the segmentation fault in my C++ code"},
+    ]
+    runtime = {}
+    mw.after_agent(state, runtime)
+    assert mw.title == "Help me fix the segmentation fault in my C++ code"
+    assert runtime.get("title") == mw.title
+
+
+def test_title_middleware_truncation():
+    mw = TitleMiddleware()
+    from kairos.core.state import ThreadState
+    state = ThreadState()
+    state.messages = [
+        {"role": "user", "content": "A" * 100 + "\nmore text here"},
+    ]
+    mw.after_agent(state, {})
+    assert len(mw.title) <= TitleMiddleware.MAX_TITLE_LENGTH
+
+
+def test_uploads_middleware_no_dir():
+    mw = UploadsMiddleware()
+    from kairos.core.state import ThreadState
+    state = ThreadState()
+    state.messages = [{"role": "user", "content": "test"}]
+    mw.before_agent(state, {})
+    assert state.messages[0]["content"] == "test"  # Unchanged
+
+
+def test_view_image_no_vision():
+    mw = ViewImageMiddleware(supports_vision=False)
+    from kairos.core.state import ThreadState
+    state = ThreadState()
+    state.messages = [{"role": "user", "content": "test"}]
+    mw.before_model(state, {})
+    assert len(state.messages) == 1  # No injection when vision disabled
