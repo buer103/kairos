@@ -8,7 +8,7 @@
 **Kairos** is an AI agent framework that inherits from
 [Hermes](https://github.com/NousResearch/hermes-agent) and
 [DeerFlow](https://github.com/bytedance/deer-flow),
-adding four original capabilities neither provides.
+adding original capabilities neither provides.
 
 Named after the ancient Greek word for *the decisive moment* —
 the instant when an archer releases the bowstring.
@@ -17,84 +17,117 @@ the instant when an archer releases the bowstring.
 
 | From | What |
 |------|------|
-| **Hermes** | Agent Loop, Tool Registry, Chat CLI, Skills+Curator, Session Search, Gateway, RL Training, Model Providers |
-| **DeerFlow** | Middleware Pipeline, Sub-Agent Factory, Sandbox, Typed State, Context Compression |
-| **Kairos (new)** | RAG Engine, Structured Knowledge, Evidence Chain, Confidence+Citation, Customizable System Prompt |
+| **Hermes** | Agent Loop, Tool Registry, Skills+Curator, Memory, Session Search, Gateway (11 platforms), Cron, Delegation, RL Training, Model Providers |
+| **DeerFlow** | Middleware Pipeline (16 layers), Sub-Agent Factory, Sandbox, Typed ThreadState, Context Compression |
+| **Kairos (new)** | RAG Engine, Structured Knowledge, Evidence Chain, Confidence+Citation, Plugin System, Credential Pool, Rich TUI |
 
 ## 🏗️ Architecture
 
 ```
-User Message
+User Message → Gateway (11 platforms)
     │
     ▼
-┌──────────────────────────────────────────────┐
-│              Middleware Pipeline              │
-│  SkillLoader → EvidenceTracker → Compress    │
-│  → ToolRateLimit → ConfidenceScorer          │
-├──────────────────────────────────────────────┤
-│              Agent Loop (ReAct)               │
-│         think → tool_call → observe           │
-├──────────────┬───────────────────────────────┤
-│  Tool Registry│     Infrastructure           │
-│  (self-reg)  │  RAG Engine · Knowledge Store │
-│              │  Evidence DB · Vector Store   │
-├──────────────┴───────────────────────────────┤
-│  Model Providers · Session Search · Gateway  │
-│  Skills+Curator · Sub-Agent · RL Training    │
-└──────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│              Middleware Pipeline (16 layers)          │
+│  ThreadData → Uploads → Dangling → SkillLoader       │
+│  → Compress → Todo → Memory → ViewImage              │
+│  → Evidence → ToolArgRepair → Confidence             │
+│  → LLMRetry → SubagentLimit → Title → Clarify        │
+├──────────────────────────────────────────────────────┤
+│              Agent Loop (ReAct + Stateful)            │
+│         think → tool_call → observe → repeat          │
+├──────────────┬───────────────────────────────────────┤
+│  Tool Registry│     Infrastructure                   │
+│  (auto-reg)  │  RAG · Knowledge · Evidence DB        │
+│  22 tools    │  Sandbox (local/docker/ssh)           │
+├──────────────┴───────────────────────────────────────┤
+│  Model Providers · Memory · Skills · Cron            │
+│  Session Search · Delegation · RL Training           │
+└──────────────────────────────────────────────────────┘
 ```
 
-## 🚀 Quick Start (coming soon)
+## 🚀 Quick Start
 
 ```bash
-pip install kairos
+pip install kairos-agent
+
+# Generate default config
+kairos config init
+
+# Set your API key (or add to ~/.config/kairos/config.yaml)
+export DEEPSEEK_API_KEY=sk-...
 
 # Interactive chat
 kairos chat
 
 # Single query
-kairos run "Diagnose the fault in log.txt"
+kairos run "Explain the Kubernetes scheduler in 3 bullet points"
 
-# With your own tools
-kairos chat --tools my_tools.py --knowledge my_schema.py
+# List available tools
+kairos chat  →  /tools
+
+# Manage cron jobs
+kairos cron list
+kairos cron add "daily-report" "0 9 * * *"
 ```
 
 ```python
 from kairos import Agent
+from kairos.providers.base import ModelConfig
 
-agent = Agent(
-    tools=[my_log_tool, my_signal_tool],
-    knowledge=MyDiagnosisSchema,
-    middlewares=["evidence", "confidence"]
+# Minimal — just an API key
+agent = Agent(model=ModelConfig(api_key="sk-..."))
+result = agent.run("What is 2+2?")
+print(result["content"])  # "4"
+
+# Full pipeline with custom tools and knowledge
+agent = Agent.build_default(
+    model=ModelConfig(api_key="sk-..."),
+    agent_name="DiagnosisBot",
+    role_description="You diagnose system faults from logs.",
+    rag_store=my_rag,
+    skills_dir="~/.kairos/skills",
 )
-
 result = agent.run("Diagnose log-20260508.txt")
-print(result.conclusion)   # "controller_overheat"
-print(result.confidence)   # 0.92
-print(result.evidence)     # [Step1, Step2, Step3]
+print(result["content"])
+print(result["confidence"])  # 0.92
 ```
 
-## 📖 Full Architecture
+## 📦 Modules
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — 18 modules, full comparison
-matrix against Hermes and DeerFlow, three-layer classification, and MVP breakdown.
+| Layer | Modules |
+|-------|---------|
+| **Core** | Agent Loop (ReAct + Stateful), 16-layer Middleware Pipeline, Typed ThreadState |
+| **Tools** | 22 built-in tools (file, terminal, web, rag, knowledge, cron, delegate) |
+| **Providers** | OpenAI-compatible + Credential Pool (multi-key rotation + retry) |
+| **Infra** | RAG Engine, Structured Knowledge, Evidence DB, Vector Store |
+| **Memory** | Persistent memory (SQLite), auto-injection middleware |
+| **Skills** | Curator lifecycle (install/update/remove), skill loader middleware |
+| **Gateway** | 11 platform adapters (CLI, Telegram, WeChat, Slack, Discord, Feishu, WhatsApp, Signal, Line, Matrix, IRC) |
+| **Cron** | SQLite-backed scheduler (cron expression, repeat, pause/resume) |
+| **Delegation** | Sub-agent spawning (ThreadPoolExecutor, timeout, batch) |
+| **Sandbox** | 3 execution backends (local/Docker/SSH), sandbox middleware |
+| **Training** | Trajectory recorder (ShareGPT), RL environment + rewards |
+| **CLI** | Rich TUI (4 skins, 10+ slash commands, spinner, panels) |
+| **Config** | YAML/JSON config + env var fallback (`kairos config init`) |
+| **Plugins** | Plugin manifest + Manager (load/unload/reload) |
 
-## 🚧 Status
+## ✅ Status
 
-**Pre-alpha — implementing Phase 1 modules.**
+**Alpha — 137 integration tests passing.**
 
-- [x] Architecture design
-- [ ] `core/` — Agent Loop, Middleware hooks, Typed State
-- [ ] `providers/` — Model abstraction
-- [ ] `tools/` — Self-registering registry
-- [ ] `chat/` — CLI interface
-- [ ] `prompt/` — System prompt engine
-- [ ] `infra/` — RAG, Knowledge Store, Evidence DB
-- [ ] `middleware/` — Evidence, Confidence, Compress
-- [ ] `agents/` — Sub-Agent factory
+- [x] Architecture design + module comparison matrix
+- [x] Phase 1: Agent Loop, Prompt Engine, RAG, Knowledge, Evidence, Middleware
+- [x] Phase 2: Memory, Skills, Session Search, Sandbox
+- [x] Phase 3: Gateway (4 platforms), Training (RL recorder + env)
+- [x] Phase 4: Middleware parity with DeerFlow (5 → 16 layers)
+- [x] Phase 5: LLM error handling, credential pool, SSE streaming, interrupt/resume
+- [x] Phase 6: Cron scheduler, Rich TUI, Sandbox wiring, Sub-agent delegation
+- [x] Phase 7: Gateway expansion (7 → 11 platforms), layered context compression
+- [x] Phase 8: Config system, pyproject.toml, CLI polish, README
 
 ---
 
 <p align="center">
-  <sub>Built by <a href="https://github.com/buer103">buer103</a></sub>
+  <sub>Built by <a href="https://github.com/buer103">buer103</a> · 15 commits · 137 tests</sub>
 </p>

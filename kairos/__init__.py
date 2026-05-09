@@ -55,6 +55,9 @@ from kairos.agents.delegate import (
     DelegationManager, SubAgent, register_delegate_tool,
 )
 
+# Config system
+from kairos.config import Config, get_config, write_default_config
+
 __all__ = [
     "Agent", "StatefulAgent",
     "register_tool", "__version__",
@@ -79,4 +82,5 @@ __all__ = [
     "SandboxMiddleware",
     "DelegateTask", "DelegateResult", "DelegateConfig",
     "DelegationManager", "SubAgent", "register_delegate_tool",
+    "Config", "get_config", "write_default_config",
 ]

@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kairos-agent"
-version = "0.1.0"
+version = "0.7.0"
 description = "Kairos — The right tool, at the right moment. An AI agent framework."
 readme = "README.md"
-license = {text = "MIT"}
+license = { text = "MIT" }
 requires-python = ">=3.10"
-authors = [{name = "buer103"}]
-keywords = ["ai", "agent", "llm", "rag", "framework"]
+authors = [{ name = "buer103" }]
+keywords = ["ai", "agent", "llm", "rag", "framework", "middleware", "cron", "gateway"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
@@ -24,11 +24,23 @@ classifiers = [
 dependencies = [
     "openai>=1.0.0",
     "pydantic>=2.0.0",
+    "rich>=13.0.0",
 ]
 
 [project.optional-dependencies]
+# Token-accurate compression
+compress = ["tiktoken>=0.5.0"]
+# RAG / vector search
 rag = ["chromadb>=0.4.0"]
-all = ["kairos-agent[rag]"]
+# Dev tools
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+]
+# Everything
+all = [
+    "kairos-agent[compress,rag,dev]",
+]
 
 [project.scripts]
 kairos = "kairos.cli:main"
@@ -36,3 +48,9 @@ kairos = "kairos.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["kairos*"]
+exclude = ["tests*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["smoke_test.py", "test_*.py"]
+addopts = ["-q", "--tb=short"]
