@@ -96,7 +96,10 @@ class SkillManager:
         self._backup_dir = self._dir / self.BACKUP_DIR_NAME
         self._backup_dir.mkdir(exist_ok=True)
         self._index: dict[str, SkillEntry] = {}
+        self._external_dirs: list[Path] = []
         self._load_index()
+        self._load_config()
+        self._ensure_builtin()
 
     # ── Public API ──────────────────────────────────────────────
 
@@ -291,6 +294,323 @@ class SkillManager:
                 return target
         return None
 
+    # ── Scanning & Reindex ──────────────────────────────────────
+
+    def scan(self, categories: list[str] | None = None) -> dict[str, Any]:
+        """Scan the skills directory for SKILL.md files and update the index.
+
+        Discovers new skills not yet in the index. Does NOT remove index
+        entries for files that are gone — use reindex() for that.
+
+        Returns a dict with added, updated, unchanged counts.
+        """
+        if not self._dir.exists():
+            return {"added": 0, "updated": 0, "unchanged": 0}
+
+        added = 0
+        updated = 0
+        unchanged = 0
+        seen: set[str] = set()
+
+        search_dirs = [self._dir] + list(self._external_dirs)
+        if categories:
+            search_dirs = [self._dir / c for c in categories if (self._dir / c).exists()]
+
+        for search_dir in search_dirs:
+            for skill_md in search_dir.glob("**/SKILL.md"):
+                # Skip backup dir
+                if self.BACKUP_DIR_NAME in skill_md.parts:
+                    continue
+
+                try:
+                    content = skill_md.read_text(encoding="utf-8")
+                    match = _FRONTMATTER_RE.match(content)
+                    if match:
+                        frontmatter = match.group(1)
+                        name = ""
+                        description = ""
+                        for line in frontmatter.split("\n"):
+                            line = line.strip()
+                            if line.startswith("name:"):
+                                name = line.split(":", 1)[1].strip().strip('"').strip("'")
+                            elif line.startswith("description:"):
+                                description = line.split(":", 1)[1].strip().strip('"').strip("'")
+                        if not name:
+                            name = skill_md.parent.name
+                    else:
+                        name = skill_md.parent.name
+                        description = ""
+
+                    seen.add(name)
+
+                    existing = self._index.get(name)
+                    if existing:
+                        if existing.status == SkillStatus.ARCHIVED:
+                            existing.status = SkillStatus.ACTIVE
+                            existing.path = skill_md
+                            existing.updated_at = time.time()
+                            updated += 1
+                        else:
+                            unchanged += 1
+                    else:
+                        self._index[name] = SkillEntry(
+                            name=name,
+                            description=description,
+                            path=skill_md,
+                            status=SkillStatus.ACTIVE,
+                        )
+                        added += 1
+                except Exception:
+                    pass
+
+        if added or updated:
+            self._save_index()
+
+        return {"added": added, "updated": updated, "unchanged": unchanged}
+
+    def reindex(self) -> dict[str, Any]:
+        """Full rescan: add new skills, remove stale index entries, update changed.
+
+        Returns a dict with added, removed, updated, unchanged counts.
+        """
+        if not self._dir.exists():
+            removed = len(self._index)
+            self._index.clear()
+            self._save_index()
+            return {"added": 0, "removed": removed, "updated": 0, "unchanged": 0}
+
+        # Build set of names found on disk
+        found: set[str] = set()
+        for search_dir in [self._dir] + list(self._external_dirs):
+            for skill_md in search_dir.glob("**/SKILL.md"):
+                if self.BACKUP_DIR_NAME in skill_md.parts:
+                    continue
+                try:
+                    content = skill_md.read_text(encoding="utf-8")
+                    match = _FRONTMATTER_RE.match(content)
+                    if match:
+                        frontmatter = match.group(1)
+                        name = ""
+                        description = ""
+                        for line in frontmatter.split("\n"):
+                            line = line.strip()
+                            if line.startswith("name:"):
+                                name = line.split(":", 1)[1].strip().strip('"').strip("'")
+                            elif line.startswith("description:"):
+                                description = line.split(":", 1)[1].strip().strip('"').strip("'")
+                        if not name:
+                            name = skill_md.parent.name
+                    else:
+                        name = skill_md.parent.name
+                        description = ""
+
+                    found.add(name)
+
+                    existing = self._index.get(name)
+                    if existing:
+                        if existing.status == SkillStatus.ARCHIVED:
+                            existing.status = SkillStatus.ACTIVE
+                            existing.path = skill_md
+                            existing.updated_at = time.time()
+                        else:
+                            existing.path = skill_md  # Update path (might have moved)
+                    else:
+                        self._index[name] = SkillEntry(
+                            name=name,
+                            description=description,
+                            path=skill_md,
+                            status=SkillStatus.ACTIVE,
+                        )
+                except Exception:
+                    pass
+
+        # Remove entries not found on disk (archived ones excluded from deletion)
+        removed = 0
+        stale_names = []
+        for name, entry in list(self._index.items()):
+            if name not in found and entry.status != SkillStatus.ARCHIVED:
+                stale_names.append(name)
+
+        for name in stale_names:
+            del self._index[name]
+            removed += 1
+
+        self._save_index()
+
+        return {"added": max(0, len(found) - len(self._index) + removed),
+                "removed": removed, "updated": 0, "unchanged": len(found) - max(0, len(found) - len(self._index) + removed)}
+
+    def clean(self, days: int | None = None) -> dict[str, Any]:
+        """Remove all archived skills older than N days from the backup directory.
+
+        Returns counts of cleaned entries and freed bytes.
+        """
+        threshold_days = days or (self.STALE_DAYS * 3)  # Default: 90 days
+        cutoff = time.time() - threshold_days * 86400
+        cleaned = 0
+        freed_bytes = 0
+
+        if not self._backup_dir.exists():
+            return {"cleaned": 0, "freed_bytes": 0}
+
+        for item in self._backup_dir.iterdir():
+            try:
+                stat = item.stat()
+                if stat.st_mtime < cutoff:
+                    if item.is_dir():
+                        for f in item.rglob("*"):
+                            if f.is_file():
+                                freed_bytes += f.stat().st_size
+                        import shutil
+                        shutil.rmtree(item)
+                    else:
+                        freed_bytes += stat.st_size
+                        item.unlink()
+                    cleaned += 1
+            except Exception:
+                pass
+
+        # Also remove archived entries from index that are past threshold
+        to_remove = []
+        for name, entry in list(self._index.items()):
+            if entry.status == SkillStatus.ARCHIVED:
+                if entry.updated_at < cutoff:
+                    to_remove.append(name)
+
+        for name in to_remove:
+            del self._index[name]
+
+        if to_remove:
+            self._save_index()
+
+        return {"cleaned": cleaned + len(to_remove), "freed_bytes": freed_bytes}
+
+    # ── Bulk Access ─────────────────────────────────────────────
+
+    def get_all_skills(self) -> list[dict[str, Any]]:
+        """Return all active/stale skills with full metadata for tool consumption."""
+        result = []
+        for entry in self._index.values():
+            if entry.status == SkillStatus.ARCHIVED:
+                continue
+            data = entry.to_dict()
+            # Add frontmatter metadata if file exists
+            if entry.path.exists():
+                try:
+                    content = entry.path.read_text(encoding="utf-8")
+                    match = _FRONTMATTER_RE.match(content)
+                    if match:
+                        fm = match.group(1)
+                        for line in fm.split("\n"):
+                            line = line.strip()
+                            if ":" in line and not line.startswith("#"):
+                                k, _, v = line.partition(":")
+                                k = k.strip()
+                                v = v.strip().strip('"').strip("'")
+                                if k not in ("name", "description"):
+                                    data[k] = v
+                except Exception:
+                    pass
+            result.append(data)
+        return sorted(result, key=lambda s: s["name"])
+
+    def get_skill_content(self, name: str) -> dict[str, Any] | None:
+        """Load a skill's full content with metadata, body, and linked files.
+
+        Returns None if the skill doesn't exist or is archived.
+        """
+        entry = self._index.get(name)
+        if not entry or entry.status == SkillStatus.ARCHIVED:
+            return None
+
+        if not entry.path.exists():
+            return None
+
+        try:
+            raw = entry.path.read_text(encoding="utf-8")
+        except Exception:
+            return None
+
+        match = _FRONTMATTER_RE.match(raw)
+        if match:
+            frontmatter = match.group(1)
+            body = raw[match.end():].strip()
+        else:
+            frontmatter = ""
+            body = raw.strip()
+
+        # Parse frontmatter
+        metadata: dict[str, str] = {}
+        for line in frontmatter.split("\n"):
+            line = line.strip()
+            if ":" in line and not line.startswith("#"):
+                k, _, v = line.partition(":")
+                metadata[k.strip()] = v.strip().strip('"').strip("'")
+
+        # Discover linked files
+        linked_files: dict[str, list[str]] = {"references": [], "templates": [], "scripts": [], "assets": []}
+        skill_dir = entry.path.parent
+        for subdir in linked_files:
+            subdir_path = skill_dir / subdir
+            if subdir_path.exists():
+                for f in sorted(subdir_path.rglob("*")):
+                    if f.is_file():
+                        linked_files[subdir].append(str(f.relative_to(skill_dir)))
+
+        return {
+            "name": entry.name,
+            "description": entry.description,
+            "content": body,
+            "raw_content": raw,
+            "path": str(entry.path),
+            "skill_dir": str(skill_dir),
+            "status": entry.status.value,
+            "use_count": entry.use_count,
+            "metadata": metadata,
+            "linked_files": linked_files,
+        }
+
+    def list_files(self, name: str, file_path: str | None = None) -> dict[str, Any] | None:
+        """List or access files within a skill directory.
+
+        If file_path is None, returns list of linked files.
+        If file_path is set, returns the file content.
+        """
+        entry = self._index.get(name)
+        if not entry or entry.status == SkillStatus.ARCHIVED:
+            return None
+
+        skill_dir = entry.path.parent
+
+        if file_path:
+            # Resolve and read a specific file
+            target = (skill_dir / file_path).resolve()
+            try:
+                target.relative_to(skill_dir.resolve())
+            except ValueError:
+                return {"error": "Path traversal denied"}
+
+            if not target.exists() or not target.is_file():
+                return {"error": f"File not found: {file_path}"}
+
+            try:
+                content = target.read_text(encoding="utf-8")
+                return {"path": str(target), "content": content, "size": len(content)}
+            except UnicodeDecodeError:
+                return {"path": str(target), "binary": True, "size": target.stat().st_size}
+
+        # List all files
+        files: dict[str, list[str]] = {}
+        for subdir in ("references", "templates", "scripts", "assets"):
+            subdir_path = skill_dir / subdir
+            if subdir_path.exists():
+                files[subdir] = [str(f.relative_to(skill_dir)) for f in sorted(subdir_path.rglob("*")) if f.is_file()]
+
+        result = self.get_skill_content(name) or {}
+        result["skill_dir"] = str(skill_dir)
+        result["files"] = files
+        return result
+
     # ── Internal ─────────────────────────────────────────────────
 
     def _load_index(self) -> None:
@@ -316,3 +636,42 @@ class SkillManager:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_path = self._backup_dir / f"{entry.name}_{timestamp}.bak"
         shutil.copy2(str(entry.path), str(backup_path))
+
+    def _load_config(self) -> None:
+        """Load skills configuration from kairos config.yaml if available."""
+        try:
+            from kairos.config import get_config
+            cfg = get_config()
+            # Load external skill directories
+            ext_dirs = cfg.get("skills.external_dirs", [])
+            if ext_dirs:
+                for d in ext_dirs:
+                    p = Path(d).expanduser()
+                    if p.exists():
+                        self._external_dirs.append(p)
+            # Override stale days from config
+            stale_days = cfg.get("skills.stale_days")
+            if stale_days is not None:
+                self.STALE_DAYS = int(stale_days)
+        except Exception:
+            pass
+
+    def _ensure_builtin(self) -> None:
+        """Copy built-in skills from the package to the user skills dir on first run."""
+        # Find the package's builtin skills directory
+        import kairos.skills as skills_pkg
+        pkg_dir = Path(skills_pkg.__file__).parent
+        builtin_src = pkg_dir / "builtin"
+        builtin_dst = self._dir / "builtin"
+
+        if not builtin_src.exists():
+            return
+
+        # Only copy if destination doesn't exist (first run)
+        if builtin_dst.exists():
+            return
+
+        try:
+            shutil.copytree(str(builtin_src), str(builtin_dst))
+        except Exception:
+            pass

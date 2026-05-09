@@ -61,24 +61,26 @@ class StatefulAgent(Agent):
         return result
 
     def chat_stream(self, user_message: str) -> Generator[dict, None, None]:
-        """Chat with streaming — yields response chunks."""
+        """Chat with real token-level streaming from the provider.
+
+        Yields: {"type":"token","content":"你"} for each token,
+                {"type":"tool_call","name":"..."} when a tool is invoked,
+                {"type":"done","content":"...","confidence":...} when complete.
+        """
         if self._interrupted:
             yield {"type": "error", "message": "Conversation interrupted."}
             return
 
-        result = self.chat(user_message)
-        words = result.get("content", "").split()
-        chunk_size = max(1, len(words) // 10) if words else 1
+        self._turn_count += 1
 
-        for i in range(0, len(words), chunk_size):
-            yield {"type": "token", "content": " ".join(words[i : i + chunk_size]) + " "}
+        if self._state is None:
+            self._state = self._init_conversation(user_message)
+        else:
+            self._state.messages.append({"role": "user", "content": user_message})
 
-        yield {
-            "type": "done",
-            "content": result.get("content", ""),
-            "confidence": result.get("confidence"),
-            "evidence": result.get("evidence", []),
-        }
+        # Execute agent loop with streaming — yield events as they happen
+        yield from self._execute_loop_stream(self._state, self._runtime)
+        self._auto_save_session()
 
     def reset(self) -> None:
         self._state = None
@@ -199,3 +201,85 @@ class StatefulAgent(Agent):
             signal.signal(signal.SIGINT, _handler)
         except (ValueError, OSError):
             pass
+
+    def _execute_loop_stream(self, state, runtime) -> Generator[dict, None, None]:
+        """Execute the agent loop with streaming — yields provider events in real-time."""
+        import json as _json
+        from kairos.tools.registry import get_tool_schemas, execute_tool
+
+        messages = state.messages
+        iterations = 0
+
+        while iterations < self.max_iterations:
+            self.pipeline.before_model(state, runtime)
+
+            tool_schemas = get_tool_schemas() or None
+
+            # Stream from provider
+            stream = self.model.chat_stream(messages, tools=tool_schemas)
+
+            assist_msg = {"role": "assistant", "content": ""}
+            tool_calls: list[dict] = []
+
+            for event in stream:
+                yield event  # Forward token/tool_call/done events to caller
+
+                if event["type"] == "done":
+                    assist_msg["content"] = event.get("content", "")
+
+                    # Collect tool calls from stream
+                    if event.get("tool_calls"):
+                        for tc in event["tool_calls"]:
+                            tool_calls.append(tc)
+
+            self.pipeline.after_model(state, runtime)
+
+            # If there are tool calls, execute them and loop
+            if tool_calls:
+                for tc in tool_calls:
+                    tool_name = tc["name"]
+                    try:
+                        tool_args = _json.loads(tc["arguments"])
+                    except Exception:
+                        tool_args = {}
+
+                    result = self.pipeline.wrap_tool_call(
+                        tool_name,
+                        tool_args,
+                        lambda name, args, **kw: execute_tool(name, args),
+                        state=state,
+                    )
+
+                    # Add tool call + result to messages
+                    messages.append({
+                        "role": "assistant",
+                        "tool_calls": [{
+                            "id": tc["id"],
+                            "type": "function",
+                            "function": {
+                                "name": tool_name,
+                                "arguments": tc["arguments"],
+                            },
+                        }],
+                    })
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": _json.dumps(result, ensure_ascii=False),
+                    })
+
+                iterations += 1
+                continue
+
+            # No tool calls — we're done
+            messages.append(assist_msg)
+            self.pipeline.after_agent(state, runtime)
+            return
+
+        # Max iterations reached — emit final error and exit
+        yield {
+            "type": "done",
+            "content": f"Max iterations ({self.max_iterations}) reached.",
+            "tool_calls": None,
+            "usage": {},
+        }

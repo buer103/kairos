@@ -12,6 +12,7 @@ from kairos.tools.registry import register_tool
 # Register built-in tools (imports trigger @register_tool decorators)
 from kairos.tools import rag_search, knowledge_lookup  # noqa: F401
 from kairos.tools import builtin  # noqa: F401 — read_file, write_file, terminal, etc.
+from kairos.tools import skills_tool  # noqa: F401 — skills_list, skill_view, skill_manage
 from kairos.agents import factory  # noqa: F401
 
 # Logging

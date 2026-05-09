@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 
 from kairos.cli.rich_ui import KairosConsole, SKINS
 
@@ -11,7 +12,7 @@ __all__ = ["KairosConsole", "SKINS", "main"]
 
 
 def main():
-    """Main entry point: kairos chat / kairos run / kairos cron / kairos config."""
+    """Main entry point: kairos chat / kairos run / kairos cron / kairos config / kairos skill / kairos curator."""
     args = sys.argv[1:]
 
     if not args:
@@ -31,6 +32,10 @@ def main():
         _cron_mode(args[1:])
     elif args[0] == "config":
         _config_mode(args[1:])
+    elif args[0] == "skill":
+        _skill_mode(args[1:])
+    elif args[0] == "curator":
+        _curator_mode(args[1:])
     else:
         print(f"Unknown command: {args[0]}")
         _print_usage()
@@ -40,11 +45,16 @@ def _print_usage():
     print("Kairos — The right tool, at the right moment.")
     print()
     print("Usage:")
-    print("  kairos chat             Interactive chat mode (Rich TUI)")
-    print("  kairos run <query>      Single query mode")
-    print("  kairos cron             Cron scheduler management")
-    print("  kairos config init      Generate default config file")
-    print("  kairos --version        Show version")
+    print("  kairos chat                Interactive chat mode (Rich TUI)")
+    print("  kairos run <query>         Single query mode")
+    print("  kairos cron                Cron scheduler management")
+    print("  kairos config init         Generate default config file")
+    print("  kairos skill list          List installed skills")
+    print("  kairos skill install <url> Install a skill from GitHub/URL/local")
+    print("  kairos skill view <name>   View a skill's content")
+    print("  kairos curator status      Show skill lifecycle status")
+    print("  kairos curator clean       Remove archived skills older than 90 days")
+    print("  kairos --version           Show version")
 
 
 def _chat_mode(args: list[str]):
@@ -233,8 +243,137 @@ def _config_mode(args: list[str]):
         console.info("Usage: kairos config [init|show]")
 
 
+def _skill_mode(args: list[str]):
+    """Skill management: kairos skill list|view|install|uninstall|update."""
+    from kairos.skills.manager import SkillManager
+    from kairos.skills.marketplace import SkillMarketplace
+
+    manager = SkillManager()
+    marketplace = SkillMarketplace(manager)
+
+    if not args or args[0] == "list":
+        # Scan first to pick up any new skills
+        manager.scan()
+        skills = manager.list_skills()
+        if not skills:
+            print("No skills installed. Use 'kairos skill install <source>' to add one.")
+            return
+
+        print(f"Installed skills ({manager.stats()['active']} active, {manager.stats()['stale']} stale):\n")
+        for entry in skills:
+            status_icon = "●" if entry.status.value == "active" else "○" if entry.status.value == "stale" else "✕"
+            print(f"  {status_icon} {entry.name}")
+            if entry.description:
+                print(f"      {entry.description[:80]}")
+        print()
+
+    elif args[0] == "view" and len(args) >= 2:
+        content = manager.get_skill_content(args[1])
+        if content is None:
+            print(f"Error: Skill '{args[1]}' not found.")
+            return
+        print(f"Skill: {content['name']}")
+        print(f"Status: {content['status']} | Uses: {content['use_count']}")
+        if content.get('description'):
+            print(f"Description: {content['description']}")
+        linked = {k: v for k, v in content.get('linked_files', {}).items() if v}
+        if linked:
+            print(f"\nLinked files:")
+            for kind, files in linked.items():
+                for f in files:
+                    print(f"  {kind}/{f}")
+        print(f"\n--- BEGIN SKILL ---")
+        print(content['content'])
+        print(f"--- END SKILL ---")
+
+    elif args[0] == "install" and len(args) >= 2:
+        source = args[1]
+        name = args[2] if len(args) > 2 else None
+        print(f"Installing from: {source} ...")
+        result = marketplace.install(source, name)
+        if result.get("success"):
+            print(f"✅ Installed: {result['name']} → {result['path']}")
+        else:
+            print(f"❌ Error: {result.get('error')}")
+
+    elif args[0] == "uninstall" and len(args) >= 2:
+        result = marketplace.uninstall(args[1])
+        if result.get("success"):
+            print(f"✅ Uninstalled: {result['name']}")
+        else:
+            print(f"❌ Error: {result.get('error')}")
+
+    elif args[0] == "update":
+        if len(args) >= 2:
+            result = marketplace.update(args[1])
+        else:
+            results = marketplace.update_all()
+            for r in results:
+                status = "✅" if r.get("success") else "❌"
+                print(f"  {status} {r.get('name', '?')}: {r.get('error', 'updated')}")
+            return
+        if result.get("success"):
+            print(f"✅ Updated: {result['name']}")
+        else:
+            print(f"❌ Error: {result.get('error')}")
+
+    elif args[0] == "marketplace":
+        skills = marketplace.list_marketplace()
+        if not skills:
+            print("No marketplace skills installed.")
+            return
+        print(f"Marketplace skills ({len(skills)}):\n")
+        for s in skills:
+            print(f"  ● {s['name']} ({s.get('version', '?')})")
+            print(f"    source: {s.get('source', '?')}")
+            if s.get('description'):
+                print(f"    {s['description'][:80]}")
+
+    else:
+        print(f"Unknown skill command: {' '.join(args)}")
+        print("Usage: kairos skill [list|view|install|uninstall|update|marketplace]")
+
+
+def _curator_mode(args: list[str]):
+    """Curator lifecycle management: kairos curator status|clean|reindex."""
+    from kairos.skills.manager import SkillManager
+    import json
+
+    manager = SkillManager()
+
+    if not args or args[0] == "status":
+        stats = manager.stats()
+        print("Curator Status\n" + "=" * 40)
+        print(f"  Total skills:   {stats['total']}")
+        print(f"  Active:         {stats['active']}")
+        print(f"  Stale (>30d):   {stats['stale']}")
+        print(f"  Archived:       {stats['archived']}")
+        print(f"  Categories:     {stats['categories']}")
+        print(f"  Backups:        {stats['backups']}")
+
+        # Show stale skills
+        stale = [e for e in manager.list_skills() if e.status.value == "stale"]
+        if stale:
+            print(f"\nStale skills (unused >30 days):")
+            for s in stale:
+                last = "never" if s.last_used_at is None else f"{int(time.time() - s.last_used_at) // 86400}d ago"
+                print(f"  ○ {s.name} (last used: {last})")
+
+    elif args[0] == "clean":
+        days = int(args[1]) if len(args) > 1 else None
+        result = manager.clean(days)
+        print(f"Cleaned {result['cleaned']} archived entries ({result['freed_bytes']} bytes freed)")
+
+    elif args[0] == "reindex":
+        result = manager.reindex()
+        print(f"Reindexed: +{result['added']} added, -{result['removed']} removed")
+
+    else:
+        print(f"Unknown curator command: {' '.join(args)}")
+        print("Usage: kairos curator [status|clean|reindex]")
+
+
 def _parse_field(field: str) -> list[int]:
-    """Parse a cron field like '*' or '1,2,3' or '*/5'."""
     if field == "*":
         return []
     if field.startswith("*/"):
@@ -315,6 +454,21 @@ def _handle_slash(console, cmd: str, agent, model_config):
                 console.error(f"Error: {e}")
         else:
             console.error("Usage: /run <query>")
+
+    elif command == "/skills":
+        from kairos.skills.manager import SkillManager
+        manager = SkillManager()
+        manager.scan()
+        skills = manager.list_skills()
+        if not skills:
+            console.info("No skills available. Use 'kairos skill install <source>' to add one.")
+        else:
+            for entry in skills:
+                status_icon = "●" if entry.status.value == "active" else "○" if entry.status.value == "stale" else "✕"
+                line = f"  {status_icon} {entry.name}"
+                if entry.description:
+                    line += f" — {entry.description[:60]}"
+                console.info(line)
 
     else:
         console.error(f"Unknown command: {command}. Type /help for available commands.")

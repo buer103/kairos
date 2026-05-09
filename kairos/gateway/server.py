@@ -111,24 +111,32 @@ class GatewayServer:
         if not text:
             return web.json_response({"error": "No message provided"}, status=400)
 
-        msg = UnifiedMessage.from_text(text, platform="http")
-
         response_obj = web.StreamResponse()
         response_obj.headers["Content-Type"] = "text/event-stream"
         response_obj.headers["Cache-Control"] = "no-cache"
         response_obj.headers["Connection"] = "keep-alive"
         await response_obj.prepare(request)
 
-        # Run agent and stream each "chunk" or the full result
-        result = self.agent.run(msg.text)
+        try:
+            # Use real streaming if agent supports it
+            if hasattr(self.agent, "chat_stream"):
+                for event in self.agent.chat_stream(text):
+                    data = json.dumps(event, ensure_ascii=False)
+                    await response_obj.write(f"data: {data}\n\n".encode())
+            else:
+                # Fallback to synchronous
+                result = self.agent.run(text)
+                data = json.dumps({
+                    "type": "done",
+                    "content": result.get("content", ""),
+                    "confidence": result.get("confidence"),
+                    "evidence": result.get("evidence", []),
+                }, ensure_ascii=False)
+                await response_obj.write(f"data: {data}\n\n".encode())
+        except Exception as e:
+            data = json.dumps({"type": "error", "message": str(e)}, ensure_ascii=False)
+            await response_obj.write(f"data: {data}\n\n".encode())
 
-        # SSE format
-        data = json.dumps({
-            "text": result.get("content", ""),
-            "confidence": result.get("confidence"),
-            "evidence": result.get("evidence", []),
-        }, ensure_ascii=False)
-        await response_obj.write(f"data: {data}\n\n".encode())
         await response_obj.write_eof()
         return response_obj
 

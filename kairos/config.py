@@ -206,6 +206,16 @@ def write_default_config(path: str | Path) -> None:
             "max_iterations": 20,
             "skills_dir": "~/.kairos/skills",
         },
+        "skills": {
+            "external_dirs": [],
+            "stale_days": 30,
+            "template_vars": True,
+            "inline_shell": False,
+        },
+        "curator": {
+            "clean_days": 90,
+            "auto_clean": False,
+        },
         "tools": {
             "serper_api_key": "${SERPER_API_KEY}",
             "tavily_api_key": "${TAVILY_API_KEY}",

@@ -184,6 +184,11 @@ class Agent:
             executor = SubAgentExecutor(self.model)
             set_executor(executor)
 
+        # Wire up skill manager for built-in skill tools
+        from kairos.tools.skills_tool import set_skill_manager
+        from kairos.skills.manager import SkillManager
+        set_skill_manager(SkillManager(skills_dir))
+
         # Load tools (trigger @register_tool decorators)
         if tools:
             for t in tools:
