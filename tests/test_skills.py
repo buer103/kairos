@@ -47,7 +47,8 @@ from kairos.gateway.protocol import (
     UnifiedMessage, UnifiedResponse, ContentBlock, ContentType,
     MessageRole, ConnectionState,
 )
-from kairos.gateway.adapters.base import CLIAdapter, TelegramAdapter, SlackAdapter
+from kairos.gateway.adapters.base import CLIAdapter
+from kairos.gateway.adapters import TelegramAdapter, SlackAdapter
 from kairos.training.recorder import TrajectoryRecorder, ToolContext
 from kairos.training.env import (
     TrainingEnv, EnvironmentRegistry, RolloutRunner,

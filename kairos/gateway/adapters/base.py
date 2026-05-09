@@ -8,6 +8,9 @@ from typing import Any
 from kairos.gateway.protocol import (
     UnifiedMessage,
     UnifiedResponse,
+    ContentBlock,
+    ContentType,
+    MessageRole,
     ConnectionState,
 )
 
@@ -112,117 +115,8 @@ class CLIAdapter(PlatformAdapter):
         except (KeyboardInterrupt, EOFError):
             return None
 
-# Lazy import to avoid circular imports
-from kairos.gateway.protocol import MessageRole, ContentBlock
-
-
-class TelegramAdapter(PlatformAdapter):
-    """Telegram Bot API adapter (stub — requires python-telegram-bot)."""
-
-    platform_name = "telegram"
-
-    def __init__(self, bot_token: str = ""):
-        super().__init__()
-        self._token = bot_token
-
-    async def connect(self) -> bool:
-        if not self._token:
-            self._state = ConnectionState.ERROR
-            return False
-        try:
-            # Requires: pip install python-telegram-bot
-            # from telegram.ext import Application
-            # self._app = Application.builder().token(self._token).build()
-            self._state = ConnectionState.CONNECTED
-            return True
-        except ImportError:
-            self._state = ConnectionState.ERROR
-            return False
-
-    async def disconnect(self) -> None:
-        self._state = ConnectionState.DISCONNECTED
-
-    async def send(self, chat_id: str, response: UnifiedResponse) -> bool:
-        """Send text + optional media to a Telegram chat."""
-        if not self._token:
-            return False
-        import urllib.request
-        import json as _json
-        try:
-            url = f"https://api.telegram.org/bot{self._token}/sendMessage"
-            data = _json.dumps({
-                "chat_id": chat_id,
-                "text": response.text,
-                "parse_mode": "Markdown",
-            }).encode()
-            req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
-            urllib.request.urlopen(req, timeout=10)
-            return True
-        except Exception:
-            return False
-
-    async def receive(self) -> UnifiedMessage | None:
-        return None  # Webhook-based; messages come via HTTP callback
-
-
-class WeChatAdapter(PlatformAdapter):
-    """WeChat Official Account adapter (stub)."""
-
-    platform_name = "wechat"
-
-    def __init__(self, app_id: str = "", app_secret: str = ""):
-        super().__init__()
-        self._app_id = app_id
-        self._app_secret = app_secret
-
-    async def connect(self) -> bool:
-        if not self._app_id:
-            self._state = ConnectionState.ERROR
-            return False
-        self._state = ConnectionState.CONNECTED
-        return True
-
-    async def disconnect(self) -> None:
-        self._state = ConnectionState.DISCONNECTED
-
-    async def send(self, chat_id: str, response: UnifiedResponse) -> bool:
-        if not self._app_id:
-            return False
-        # Stub: would call WeChat customer service API
-        return True
-
-    async def receive(self) -> UnifiedMessage | None:
-        return None  # Webhook-based
-
-
-class SlackAdapter(PlatformAdapter):
-    """Slack adapter (stub — requires slack-sdk)."""
-
-    platform_name = "slack"
-
-    def __init__(self, bot_token: str = ""):
-        super().__init__()
-        self._token = bot_token
-
-    async def connect(self) -> bool:
-        if not self._token:
-            self._state = ConnectionState.ERROR
-            return False
-        try:
-            # from slack_sdk.web.async_client import AsyncWebClient
-            self._state = ConnectionState.CONNECTED
-            return True
-        except ImportError:
-            self._state = ConnectionState.ERROR
-            return False
-
-    async def disconnect(self) -> None:
-        self._state = ConnectionState.DISCONNECTED
-
-    async def send(self, chat_id: str, response: UnifiedResponse) -> bool:
-        if not self._token:
-            return False
-        return True  # Stub
-
-    async def receive(self) -> UnifiedMessage | None:
-        return None
+# Adapter imports are at the package level (kairos.gateway.adapters)
+# TelegramAdapter, WeChatAdapter, SlackAdapter are defined in their own files:
+#   kairos/gateway/adapters/telegram.py
+#   kairos/gateway/adapters/wechat.py
+#   kairos/gateway/adapters/slack.py
