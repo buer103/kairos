@@ -7,6 +7,8 @@ __version__ = "0.9.0"
 
 from kairos.core.loop import Agent
 from kairos.core.stateful_agent import StatefulAgent
+from kairos.core.paths import ThreadPaths
+from kairos.core.thread_state import ThreadDataState
 from kairos.tools.registry import register_tool
 
 # Register built-in tools (imports trigger @register_tool decorators)

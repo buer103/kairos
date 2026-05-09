@@ -311,7 +311,7 @@ def test_thread_data_middleware():
     runtime = {"thread_id": "test-thread"}
     mw.before_agent(state, runtime)
     assert "thread_data" in state.metadata
-    assert "workspace_dir" in state.metadata["thread_data"]
+    assert "workspace" in state.metadata["thread_data"]
     assert "Workspace" in state.messages[0]["content"]
 
 
