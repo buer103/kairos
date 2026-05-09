@@ -1,21 +1,23 @@
-"""Middleware package — Kairos middleware pipeline (14 layers).
+"""Middleware package — Kairos middleware pipeline (16 layers).
 
-Layer ordering follows DeerFlow's dependency chain:
+Layer ordering follows DeerFlow's dependency chain + Kairos additions:
 
-  1. ThreadData         — workspace dirs (must be first)
-  2. Uploads            — file injection (depends on thread_data)
-  3. DanglingToolCall   — fix broken tool calls (before any model call)
-  4. SkillLoader        — load skills into context
-  5. ContextCompressor  — summarize when tokens near limit
-  6. Todo               — todo list persistence (after compression)
-  7. Memory             — inject persistent memory
-  8. ViewImage          — image injection for vision models (before model)
-  9. EvidenceTracker    — record tool calls as evidence steps
- 10. ConfidenceScorer   — evaluate output confidence
- 11. SubagentLimit      — cap concurrent sub-agent calls (after model)
- 12. Title              — auto-generate session title
- 13. MemoryMiddleware   — submit to long-term memory queue (after title)
- 14. Clarification      — intercept ask_user (MUST be last, may interrupt)
+  1. ThreadData         — workspace dirs
+  2. Uploads            — file injection
+  3. DanglingToolCall   — fix broken tool calls
+  4. SkillLoader        — load skills
+  5. ContextCompressor  — token budget
+  6. Todo               — plan mode persistence
+  7. Memory             — persistent memory
+  8. ViewImage          — vision support
+  9. EvidenceTracker    — evidence chain (Kairos)
+ 10. ToolArgRepair      — repair broken JSON args (Kairos)
+ 11. ConfidenceScorer   — output quality (Kairos)
+ 12. LLMRetry           — retry with credential rotation (Kairos)
+ 13. SubagentLimit      — cap concurrent sub-agents
+ 14. Title              — auto-generate title
+ 15. MemoryMiddleware   — submit to memory queue
+ 16. Clarification      — intercept ask_user (MUST be last)
 """
 
 from kairos.middleware.evidence import EvidenceTracker
@@ -30,6 +32,7 @@ from kairos.middleware.todo import TodoMiddleware
 from kairos.middleware.title import TitleMiddleware
 from kairos.middleware.uploads import UploadsMiddleware
 from kairos.middleware.view_image import ViewImageMiddleware
+from kairos.middleware.llm_retry import LLMRetryMiddleware, ToolArgRepairMiddleware
 
 # Re-export MemoryMiddleware from memory package
 from kairos.memory.middleware import MemoryMiddleware
@@ -48,5 +51,7 @@ __all__ = [
     "TitleMiddleware",
     "UploadsMiddleware",
     "ViewImageMiddleware",
+    "LLMRetryMiddleware",
+    "ToolArgRepairMiddleware",
     "MemoryMiddleware",
 ]

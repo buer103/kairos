@@ -933,3 +933,158 @@ def test_view_image_no_vision():
     state.messages = [{"role": "user", "content": "test"}]
     mw.before_model(state, {})
     assert len(state.messages) == 1  # No injection when vision disabled
+
+
+# ── P0/P1: Credential Pool ─────────────────────────────────────
+
+from kairos.providers.credential import CredentialPool, Credential, RetryConfig
+
+
+def test_credential_pool_add_acquire():
+    pool = CredentialPool()
+    pool.add("sk-abc", provider="openai", label="key1")
+    pool.add("sk-def", provider="openai", label="key2")
+    cred = pool.acquire("openai")
+    assert cred is not None
+    assert cred.key == "sk-abc"  # First added, fewest failures
+
+
+def test_credential_pool_release():
+    pool = CredentialPool()
+    cred = pool.add("sk-test", provider="openai")
+    pool.release(cred, success=True)
+    assert cred.consecutive_failures == 0
+    pool.release(cred, success=False)
+    assert cred.consecutive_failures == 1
+
+
+def test_credential_pool_rate_limit():
+    pool = CredentialPool()
+    cred = pool.add("sk-test", provider="openai")
+    pool.mark_rate_limited(cred, retry_after=0.1)
+    assert not cred.available
+    import time
+    time.sleep(0.15)
+    assert cred.available
+
+
+def test_credential_pool_stats():
+    pool = CredentialPool()
+    pool.add("sk-1", provider="openai")
+    pool.add("sk-2", provider="openai")
+    stats = pool.stats("openai")
+    assert stats["openai"]["total_keys"] == 2
+    assert stats["openai"]["available_keys"] == 2
+
+
+def test_retry_config():
+    cfg = RetryConfig(max_retries=3, base_delay=1.0)
+    delay = cfg.delay_for_attempt(0)
+    assert delay > 0
+    delay2 = cfg.delay_for_attempt(1)
+    assert delay2 > delay  # Backoff increases
+
+
+# ── P0/P1: LLM Retry Middleware ─────────────────────────────────
+
+from kairos.middleware.llm_retry import LLMRetryMiddleware, ToolArgRepairMiddleware
+
+
+def test_tool_arg_repair_trailing_comma():
+    mw = ToolArgRepairMiddleware()
+    repaired = mw._repair_json('{"key": "val",}')
+    assert repaired == {"key": "val"}
+
+
+def test_tool_arg_repair_single_quotes():
+    mw = ToolArgRepairMiddleware()
+    repaired = mw._repair_json("{'key': 'val'}")
+    assert repaired == {"key": "val"}
+
+
+def test_tool_arg_repair_python_bool():
+    mw = ToolArgRepairMiddleware()
+    repaired = mw._repair_json('{"key": True, "other": False, "none": None}')
+    assert repaired == {"key": True, "other": False, "none": None}
+
+
+def test_tool_arg_repair_valid_passthrough():
+    mw = ToolArgRepairMiddleware()
+    result = mw.wrap_tool_call("test", {"key": "val"}, lambda n, a, **kw: a)
+    assert result == {"key": "val"}
+
+
+# ── P0/P1: Stateful Agent ──────────────────────────────────────
+
+from kairos.core.stateful_agent import StatefulAgent
+from kairos.providers.base import ModelConfig
+
+
+def test_stateful_agent_save_load(tmp_path):
+    agent = StatefulAgent(model=ModelConfig(api_key="test-key"))
+    agent._session_dir = tmp_path
+
+    # Mock state for testing
+    from kairos.core.state import ThreadState, Case
+    agent._state = ThreadState()
+    agent._state.messages = [
+        {"role": "system", "content": "You are helpful."},
+        {"role": "user", "content": "Hello"},
+    ]
+
+    path = agent.save_session("test-session")
+    assert path.exists()
+
+    sessions = agent.list_sessions()
+    assert len(sessions) == 1
+    assert sessions[0]["name"] == "test-session"
+
+
+def test_stateful_agent_load_session(tmp_path):
+    agent = StatefulAgent(model=ModelConfig(api_key="test-key"))
+    agent._session_dir = tmp_path
+
+    # Save first
+    from kairos.core.state import ThreadState
+    agent._state = ThreadState()
+    agent._state.messages = [{"role": "user", "content": "Hi"}]
+    agent.save_session("load-test")
+
+    # Load into new agent
+    agent2 = StatefulAgent(model=ModelConfig(api_key="test-key"))
+    agent2._session_dir = tmp_path
+    assert agent2.load_session("load-test")
+    assert agent2.history == [{"role": "user", "content": "Hi"}]
+
+
+def test_stateful_agent_delete_session(tmp_path):
+    agent = StatefulAgent(model=ModelConfig(api_key="test-key"))
+    agent._session_dir = tmp_path
+
+    from kairos.core.state import ThreadState
+    agent._state = ThreadState()
+    agent._state.messages = [{"role": "user", "content": "x"}]
+    agent.save_session("del-test")
+
+    assert agent.delete_session("del-test") is True
+    assert agent.delete_session("nonexistent") is False
+    assert len(agent.list_sessions()) == 0
+
+
+def test_stateful_agent_reset():
+    agent = StatefulAgent(model=ModelConfig(api_key="test-key"))
+    sid1 = agent.session_id
+    agent.reset()
+    assert agent.session_id != sid1
+    assert agent.turn_count == 0
+
+
+def test_stateful_agent_interrupt(tmp_path):
+    agent = StatefulAgent(model=ModelConfig(api_key="test-key"))
+    agent._session_dir = tmp_path
+    from kairos.core.state import ThreadState
+    agent._state = ThreadState()
+    agent._state.messages = [{"role": "user", "content": "hi"}]
+    agent.interrupt()
+    result = agent.chat("hello")
+    assert result["content"] == "[Interrupted]"

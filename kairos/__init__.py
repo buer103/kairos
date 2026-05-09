@@ -3,14 +3,18 @@ Kairos — The right tool, at the right moment.
 An AI agent framework inheriting from Hermes and DeerFlow.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 from kairos.core.loop import Agent
+from kairos.core.stateful_agent import StatefulAgent
 from kairos.tools.registry import register_tool
 
 # Register built-in tools
 from kairos.tools import rag_search, knowledge_lookup  # noqa: F401
 from kairos.agents import factory  # noqa: F401
+
+# Providers
+from kairos.providers.credential import CredentialPool, Credential, RetryConfig
 
 # Phase 2
 from kairos.memory import MemoryStore, MemoryMiddleware
@@ -34,16 +38,14 @@ from kairos.training import (
 )
 
 __all__ = [
-    "Agent",
-    "register_tool",
-    "__version__",
-    # Phase 2
+    "Agent", "StatefulAgent",
+    "register_tool", "__version__",
+    "CredentialPool", "Credential", "RetryConfig",
     "MemoryStore", "MemoryMiddleware",
     "SkillManager", "SkillStatus", "SkillEntry",
     "SessionSearch",
     "Sandbox", "SandboxConfig", "SandboxProvider", "SandboxResult",
     "LocalSandbox", "DockerSandbox", "SSHSandbox", "create_sandbox",
-    # Phase 3
     "UnifiedMessage", "UnifiedResponse", "ContentBlock", "ContentType", "MessageRole",
     "ConnectionState", "GatewayServer",
     "PlatformAdapter", "CLIAdapter", "TelegramAdapter", "WeChatAdapter", "SlackAdapter",

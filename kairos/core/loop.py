@@ -43,11 +43,13 @@ class Agent:
         memory_store: Any = None,
         supports_vision: bool = False,
         is_plan_mode: bool = False,
+        credential_pool: Any = None,
+        retry_config: Any = None,
         **template_vars,
     ) -> Agent:
         """Build an Agent with the full 14-layer DeerFlow-compatible pipeline.
 
-        Middleware order (matching DeerFlow dependency chain):
+        Middleware order (matching DeerFlow dependency chain + Kairos additions):
           1. ThreadData         — workspace dirs
           2. Uploads            — file injection
           3. DanglingToolCall   — fix broken tool calls
@@ -57,11 +59,13 @@ class Agent:
           7. Memory             — persistent memory injection
           8. ViewImage          — vision model support (if supports_vision)
           9. EvidenceTracker    — record evidence steps
-         10. ConfidenceScorer   — score output quality
-         11. SubagentLimit      — cap concurrent sub-agents
-         12. Title              — auto-generate title
-         13. MemoryMiddleware   — submit to memory queue
-         14. Clarification      — intercept ask_user (MUST be last)
+         10. ToolArgRepair      — repair broken JSON tool args
+         11. ConfidenceScorer   — score output quality
+         12. LLMRetry           — retry with credential rotation
+         13. SubagentLimit      — cap concurrent sub-agents
+         14. Title              — auto-generate title
+         15. MemoryMiddleware   — submit to memory queue
+         16. Clarification      — intercept ask_user (MUST be last)
         """
         from kairos.middleware import (
             ThreadDataMiddleware,
@@ -77,7 +81,10 @@ class Agent:
             ClarificationMiddleware,
             ViewImageMiddleware,
             MemoryMiddleware,
+            LLMRetryMiddleware,
+            ToolArgRepairMiddleware,
         )
+        from kairos.providers.credential import CredentialPool, RetryConfig
 
         layers: list[Middleware] = [
             ThreadDataMiddleware(),
@@ -101,7 +108,17 @@ class Agent:
 
         layers.extend([
             EvidenceTracker(),
+            ToolArgRepairMiddleware(),
             ConfidenceScorer(),
+        ])
+
+        if credential_pool:
+            layers.append(LLMRetryMiddleware(
+                credential_pool=credential_pool,
+                retry_config=retry_config or RetryConfig(),
+            ))
+
+        layers.extend([
             SubagentLimitMiddleware(),
             TitleMiddleware(),
         ])
@@ -194,14 +211,7 @@ class Agent:
         self.system_prompt = self._prompt_builder.build()
 
     def run(self, user_message: str) -> dict[str, Any]:
-        """Run the agent loop and return the result.
-
-        Returns:
-            dict with keys:
-              - content: the agent's text response
-              - confidence: confidence score (0.0–1.0) if confidence middleware enabled
-              - evidence: list of evidence steps if evidence middleware enabled
-        """
+        """Run the agent loop one-shot and return the result."""
         case = Case(id=str(uuid.uuid4())[:8])
         state = ThreadState(case=case)
         runtime: dict[str, Any] = {"user_message": user_message}
@@ -213,6 +223,12 @@ class Agent:
         state.messages = messages
 
         self.pipeline.before_agent(state, runtime)
+        return self._execute_loop(state, runtime)
+
+    def _execute_loop(self, state: ThreadState, runtime: dict[str, Any]) -> dict[str, Any]:
+        """Execute the agent loop on an existing state (used by both run() and StatefulAgent)."""
+        messages = state.messages
+        case = state.case
 
         iterations = 0
         while iterations < self.max_iterations:
@@ -221,9 +237,17 @@ class Agent:
             tool_schemas = get_tool_schemas() or None
 
             response = self.pipeline.wrap_model_call(
-                state.messages,
+                messages,
                 lambda msgs, **kw: self.model.chat(msgs, tools=tool_schemas),
             )
+
+            # Check for error response
+            if isinstance(response, dict) and "error" in response:
+                return {
+                    "content": f"Error: {response.get('error', 'Unknown error')}",
+                    "confidence": None,
+                    "evidence": [],
+                }
 
             msg = response.choices[0].message
             self.pipeline.after_model(state, runtime)
@@ -240,7 +264,7 @@ class Agent:
                         state=state,
                     )
 
-                    state.messages.append({
+                    messages.append({
                         "role": "assistant",
                         "tool_calls": [{
                             "id": tc.id,
@@ -251,7 +275,7 @@ class Agent:
                             },
                         }],
                     })
-                    state.messages.append({
+                    messages.append({
                         "role": "tool",
                         "tool_call_id": tc.id,
                         "content": json.dumps(result, ensure_ascii=False),
@@ -261,13 +285,13 @@ class Agent:
                 continue
 
             # Done — no more tool calls
-            state.messages.append({"role": "assistant", "content": msg.content})
+            messages.append({"role": "assistant", "content": msg.content})
 
             self.pipeline.after_agent(state, runtime)
 
             return {
                 "content": msg.content,
-                "confidence": case.confidence,
+                "confidence": case.confidence if case else None,
                 "evidence": [
                     {
                         "step": s.id,
@@ -276,7 +300,7 @@ class Agent:
                         "result": s.result,
                         "duration_ms": s.duration_ms,
                     }
-                    for s in case.steps
+                    for s in (case.steps if case else [])
                 ],
             }
 
