@@ -3,7 +3,7 @@ Kairos — The right tool, at the right moment.
 An AI agent framework inheriting from Hermes and DeerFlow.
 """
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 from kairos.core.loop import Agent
 from kairos.core.stateful_agent import StatefulAgent
