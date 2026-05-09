@@ -232,6 +232,9 @@ class Agent:
         fallback_models: list[ModelConfig] | None = None,
         checkpoint_dir: str | None = None,
         trajectory_dir: str | None = None,
+        enable_security: bool = False,
+        security_allowed_paths: list[str] | None = None,
+        enable_insights: bool = False,
         **template_vars,
     ) -> Agent:
         """Build an Agent with full 17-layer pipeline."""
@@ -251,6 +254,7 @@ class Agent:
             MemoryMiddleware,
             LLMRetryMiddleware,
             ToolArgRepairMiddleware,
+            SecurityMiddleware,
         )
         from kairos.providers.credential import CredentialPool, RetryConfig
 
@@ -268,7 +272,14 @@ class Agent:
             layers.append(MemoryMiddleware(memory_store=memory_store))
         if supports_vision:
             layers.append(ViewImageMiddleware(supports_vision=True))
-        layers.extend([EvidenceTracker(), ToolArgRepairMiddleware(), ConfidenceScorer()])
+        layers.extend([EvidenceTracker(), ToolArgRepairMiddleware()])
+        if enable_security:
+            layers.append(SecurityMiddleware(
+                allowed_paths=security_allowed_paths,
+                block_dangerous_files=True,
+                block_internal_urls=True,
+            ))
+        layers.append(ConfidenceScorer())
         if credential_pool:
             layers.append(
                 LLMRetryMiddleware(
@@ -292,6 +303,7 @@ class Agent:
             fallback_models=fallback_models,
             checkpoint_dir=checkpoint_dir,
             trajectory_dir=trajectory_dir,
+            enable_insights=enable_insights,
             **template_vars,
         )
 
@@ -321,6 +333,7 @@ class Agent:
         checkpoint_dir: str | None = None,
         trajectory_dir: str | None = None,
         credential_pool: Any = None,
+        enable_insights: bool = False,
         **template_vars,
     ):
         # ---- Model chain ----
@@ -339,6 +352,12 @@ class Agent:
         # ---- Credential pool ----
         self._credential_pool = credential_pool
         self._active_credential = None  # currently held credential
+
+        # ---- Insights ----
+        self._insights = None
+        if enable_insights:
+            from kairos.observability.insights import AgentInsights
+            self._insights = AgentInsights()
 
         # ---- Budget ----
         self.budget = Budget(max_iterations=max_iterations, max_tokens=max_tokens)
@@ -569,6 +588,8 @@ class Agent:
                 health.record_success()
                 if self._active_credential:
                     self._release_credential(success=True)
+                # Auto-track usage
+                self._track_call_to_insights(result, success=True)
                 return result
             except Exception as e:
                 err = classify_error(e)
@@ -632,6 +653,31 @@ class Agent:
                 self.budget.consume(usage.total_tokens)
             elif isinstance(usage, dict) and "total_tokens" in usage:
                 self.budget.consume(usage["total_tokens"])
+        except Exception:
+            pass
+
+    def _track_call_to_insights(self, response: Any, success: bool = True) -> None:
+        """Record API call metrics to AgentInsights if enabled."""
+        if not self._insights:
+            return
+        try:
+            usage = {}
+            if hasattr(response, "usage") and response.usage:
+                u = response.usage
+                usage = {
+                    "prompt_tokens": getattr(u, "prompt_tokens", 0),
+                    "completion_tokens": getattr(u, "completion_tokens", 0),
+                }
+            provider = getattr(self._primary_config, "provider", "unknown")
+            model = getattr(self._primary_config, "model", "unknown")
+            self._insights.record_call(
+                provider=provider,
+                model=model,
+                prompt_tokens=usage.get("prompt_tokens", 0),
+                completion_tokens=usage.get("completion_tokens", 0),
+                duration_ms=0,
+                success=success,
+            )
         except Exception:
             pass
 
@@ -823,7 +869,7 @@ class Agent:
 
     def health_status(self) -> dict:
         """Return health status for all providers in the chain."""
-        return {
+        status = {
             "active_provider": self._active_provider_index,
             "budget": {
                 "iterations": self.budget.iterations,
@@ -845,6 +891,14 @@ class Agent:
                 for i, h in self._health.items()
             ],
         }
+        # Merge insights if available
+        if self._insights:
+            try:
+                insights_report = self._insights.get_health_report()
+                status["insights"] = insights_report
+            except Exception:
+                pass
+        return status
 
     # ---- Helpers ----------------------------------------------------------
 
