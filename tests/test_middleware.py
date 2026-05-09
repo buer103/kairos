@@ -256,7 +256,7 @@ def test_dangling_tool_call_fix():
             {"id": "tc1", "function": {"name": "view_image", "arguments": "{}"}},
         ]},
     ]
-    patched = mw._patch(messages)
+    patched = mw.wrap_model_call(messages, handler=lambda msgs, **kw: msgs)
     # Should have inserted a synthetic ToolMessage
     assert any(m.get("tool_call_id") == "tc1" for m in patched)
     assert any("interrupted" in m.get("content", "").lower() for m in patched)
@@ -272,7 +272,7 @@ def test_dangling_tool_call_no_dangle():
         ]},
         {"role": "tool", "tool_call_id": "tc1", "content": "result"},
     ]
-    patched = mw._patch(messages)
+    patched = mw.wrap_model_call(messages, handler=lambda msgs, **kw: msgs)
     assert patched == messages  # No changes
 
 
