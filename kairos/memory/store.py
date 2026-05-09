@@ -1,8 +1,7 @@
-"""Memory store — durable key-value storage for cross-session agent memory."""
+"""Memory store — SQLite persistent agent memory with priority and staleness."""
 
 from __future__ import annotations
 
-import json
 import sqlite3
 import time
 from pathlib import Path
@@ -10,173 +9,122 @@ from typing import Any
 
 
 class MemoryStore:
-    """Persistent memory for the agent.
+    """Persistent agent memory with LIKE search and priority ordering.
 
-    Stores compact, durable facts that survive across sessions:
-      - User preferences and corrections
-      - Environment details and conventions
-      - Project facts and tool quirks
-
-    Does NOT store: task progress, session outcomes, temporary state.
-
-    Usage:
-        store = MemoryStore()
-        store.add("user", "prefers_concise_responses", "User likes short replies")
-        results = store.search("concise")
+    Scopes: 'memory' (agent notes), 'user' (user profile).
     """
 
     def __init__(self, db_path: str | Path | None = None):
         self._db_path = Path(db_path or Path.home() / ".kairos" / "memory.db")
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._conn: sqlite3.Connection | None = None
         self._init_db()
 
+    def _get_conn(self) -> sqlite3.Connection:
+        if self._conn is None:
+            self._conn = sqlite3.connect(str(self._db_path))
+            self._conn.row_factory = sqlite3.Row
+            self._conn.execute("PRAGMA journal_mode=WAL")
+        return self._conn
+
     def _init_db(self) -> None:
-        with sqlite3.connect(str(self._db_path)) as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS memories (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    scope TEXT NOT NULL DEFAULT 'memory',
-                    key TEXT NOT NULL,
-                    value TEXT NOT NULL,
-                    created_at REAL NOT NULL,
-                    updated_at REAL NOT NULL,
-                    UNIQUE(scope, key)
-                )
-            """)
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_memories_scope
-                ON memories(scope)
-            """)
-            conn.commit()
+        self._get_conn().executescript("""
+            CREATE TABLE IF NOT EXISTS memories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                scope TEXT NOT NULL DEFAULT 'memory',
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                priority REAL DEFAULT 0.5,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                UNIQUE(scope, key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_mem_scope ON memories(scope);
+            CREATE INDEX IF NOT EXISTS idx_mem_priority ON memories(priority DESC);
+        """)
+        self._get_conn().commit()
 
-    def search(self, query: str, scope: str | None = None) -> list[dict[str, Any]]:
-        """Search memories via full-text search on key and value fields."""
-        with sqlite3.connect(str(self._db_path)) as conn:
-            where_parts = ["(key LIKE ? OR value LIKE ?)"]
-            params: list[Any] = [f"%{query}%", f"%{query}%"]
-            if scope:
-                where_parts.append("scope = ?")
-                params.append(scope)
-            where = " AND ".join(where_parts)
-            sql = f"SELECT id, scope, key, value, created_at, updated_at FROM memories WHERE {where} ORDER BY updated_at DESC"
-            rows = conn.execute(sql, params).fetchall()
-            return [
-                {
-                    "id": r[0],
-                    "scope": r[1],
-                    "key": r[2],
-                    "value": r[3],
-                    "created_at": r[4],
-                    "updated_at": r[5],
-                }
-                for r in rows
-            ]
-
-    def add(self, scope: str, key: str, value: str) -> str:
-        """Add or update a memory entry. Returns 'added' or 'updated'."""
+    def add(self, scope: str, key: str, value: str, priority: float = 0.5) -> str:
         now = time.time()
-        with sqlite3.connect(str(self._db_path)) as conn:
-            existing = conn.execute(
-                "SELECT id FROM memories WHERE scope=? AND key=?",
-                (scope, key),
-            ).fetchone()
-
-            if existing:
-                conn.execute(
-                    "UPDATE memories SET value=?, updated_at=? WHERE id=?",
-                    (value, now, existing[0]),
-                )
-                conn.commit()
-                return "updated"
-            else:
-                conn.execute(
-                    "INSERT INTO memories (scope, key, value, created_at, updated_at) VALUES (?,?,?,?,?)",
-                    (scope, key, value, now, now),
-                )
-                conn.commit()
-                return "added"
-
-    def get(self, scope: str, key: str) -> str | None:
-        """Get a memory value by scope and key."""
-        with sqlite3.connect(str(self._db_path)) as conn:
-            row = conn.execute(
-                "SELECT value FROM memories WHERE scope=? AND key=?",
-                (scope, key),
-            ).fetchone()
-            return row[0] if row else None
-
-    def all(self, scope: str | None = None) -> list[dict[str, Any]]:
-        """Get all memories, optionally filtered by scope."""
-        with sqlite3.connect(str(self._db_path)) as conn:
-            if scope:
-                rows = conn.execute(
-                    "SELECT id, scope, key, value, created_at, updated_at FROM memories WHERE scope=? ORDER BY key",
-                    (scope,),
-                ).fetchall()
-            else:
-                rows = conn.execute(
-                    "SELECT id, scope, key, value, created_at, updated_at FROM memories ORDER BY scope, key",
-                ).fetchall()
-
-            return [
-                {
-                    "id": r[0],
-                    "scope": r[1],
-                    "key": r[2],
-                    "value": r[3],
-                    "created_at": r[4],
-                    "updated_at": r[5],
-                }
-                for r in rows
-            ]
-
-    def remove(self, scope: str, key: str) -> bool:
-        """Remove a memory entry. Returns True if found and removed."""
-        with sqlite3.connect(str(self._db_path)) as conn:
-            cursor = conn.execute(
-                "DELETE FROM memories WHERE scope=? AND key=?",
-                (scope, key),
+        conn = self._get_conn()
+        existing = conn.execute(
+            "SELECT id FROM memories WHERE scope=? AND key=?", (scope, key)
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE memories SET value=?, priority=?, updated_at=? WHERE id=?",
+                (value, priority, now, existing[0]),
             )
             conn.commit()
-            return cursor.rowcount > 0
+            return "updated"
+        conn.execute(
+            "INSERT INTO memories (scope,key,value,priority,created_at,updated_at) VALUES (?,?,?,?,?,?)",
+            (scope, key, value, priority, now, now),
+        )
+        conn.commit()
+        return "added"
+
+    def get(self, scope: str, key: str) -> str | None:
+        row = self._get_conn().execute(
+            "SELECT value FROM memories WHERE scope=? AND key=?", (scope, key)
+        ).fetchone()
+        return row["value"] if row else None
+
+    def remove(self, scope: str, key: str) -> bool:
+        conn = self._get_conn()
+        c = conn.execute("DELETE FROM memories WHERE scope=? AND key=?", (scope, key))
+        conn.commit()
+        return c.rowcount > 0
+
+    def search(self, query: str, scope: str | None = None, limit: int = 20) -> list[dict]:
+        conn = self._get_conn()
+        cond = ["(key LIKE ? OR value LIKE ?)"]
+        params: list = [f"%{query}%", f"%{query}%"]
+        if scope:
+            cond.append("scope = ?")
+            params.append(scope)
+        sql = f"SELECT * FROM memories WHERE {' AND '.join(cond)} ORDER BY priority DESC, updated_at DESC LIMIT ?"
+        params.append(limit)
+        return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+    def all(self, scope: str | None = None, min_priority: float = 0.0, max_age_days: float | None = None) -> list[dict]:
+        cond = ["1=1"]
+        params: list = []
+        if scope:
+            cond.append("scope = ?"); params.append(scope)
+        if min_priority > 0:
+            cond.append("priority >= ?"); params.append(min_priority)
+        if max_age_days:
+            params.append(time.time() - max_age_days * 86400)
+            cond.append("updated_at >= ?")
+        sql = f"SELECT * FROM memories WHERE {' AND '.join(cond)} ORDER BY priority DESC, updated_at DESC"
+        return [dict(r) for r in self._get_conn().execute(sql, params).fetchall()]
 
     def clear(self, scope: str | None = None) -> int:
-        """Clear memories. If scope is None, clears all. Returns count removed."""
-        with sqlite3.connect(str(self._db_path)) as conn:
-            if scope:
-                cursor = conn.execute(
-                    "DELETE FROM memories WHERE scope=?",
-                    (scope,),
-                )
-            else:
-                cursor = conn.execute("DELETE FROM memories")
-            conn.commit()
-            return cursor.rowcount
-
-    def format_for_prompt(self, scope: str | None = None) -> str:
-        """Format memories as a system prompt injection block."""
-        memories = self.all(scope=scope)
-        if not memories:
-            return ""
-
-        blocks: dict[str, list[str]] = {}
-        for m in memories:
-            blocks.setdefault(m["scope"], []).append(f"- **{m['key']}**: {m['value']}")
-
-        parts = []
-        for scope_name, entries in blocks.items():
-            parts.append(f"## {scope_name.upper()}\n" + "\n".join(entries))
-
-        return "\n\n".join(parts)
+        conn = self._get_conn()
+        c = conn.execute("DELETE FROM memories" if scope is None else "DELETE FROM memories WHERE scope=?", (scope,) if scope else ())
+        conn.commit()
+        return c.rowcount
 
     def count(self, scope: str | None = None) -> int:
-        """Count memories, optionally filtered by scope."""
-        with sqlite3.connect(str(self._db_path)) as conn:
-            if scope:
-                row = conn.execute(
-                    "SELECT COUNT(*) FROM memories WHERE scope=?",
-                    (scope,),
-                ).fetchone()
-            else:
-                row = conn.execute("SELECT COUNT(*) FROM memories").fetchone()
-            return row[0] if row else 0
+        sql = "SELECT COUNT(*) FROM memories" if scope is None else "SELECT COUNT(*) FROM memories WHERE scope=?"
+        row = self._get_conn().execute(sql, (scope,) if scope else ()).fetchone()
+        return row[0] if row else 0
+
+    def format_for_prompt(self, scope: str | None = None, max_chars: int = 3000) -> str:
+        memories = self.all(scope=scope, min_priority=0.0, max_age_days=90)
+        if not memories:
+            return ""
+        blocks: dict[str, list[str]] = {}
+        total = 0
+        for m in memories:
+            entry = f"- **{m['key']}**: {m['value']}"
+            if total + len(entry) > max_chars:
+                break
+            blocks.setdefault(m["scope"], []).append(entry)
+            total += len(entry)
+        return "\n\n".join(f"## {s.upper()}\n" + "\n".join(e) for s, e in blocks.items())
+
+    def close(self) -> None:
+        if self._conn:
+            self._conn.close(); self._conn = None

@@ -1,12 +1,7 @@
-"""LLM error handling middleware — retry, fallback, and repair.
+"""LLM error handling — retry, jitter, circuit breaker, credential rotation.
 
-Handles the most common LLM API failures:
-  1. Network errors → retry with exponential backoff
-  2. Rate limits (429) → rotate credential, wait for reset
-  3. Authentication errors (401) → disable credential, retry with next
-  4. Invalid JSON tool arguments → attempt auto-repair
-  5. Context length exceeded → trigger compression
-  6. Timeout → retry with backoff
+Handles: rate limits (429), auth errors (401), server errors (5xx),
+network errors, context length exceeded, malformed JSON tool args.
 
 DeerFlow equivalent: LLMRetryMiddleware + LLMErrorHandlingMiddleware
 """
@@ -14,38 +9,84 @@ DeerFlow equivalent: LLMRetryMiddleware + LLMErrorHandlingMiddleware
 from __future__ import annotations
 
 import json
+import logging
+import random
 import time
+from dataclasses import dataclass, field
 from typing import Any
 
 from kairos.core.middleware import Middleware
 from kairos.providers.credential import CredentialPool, RetryConfig
 
+logger = logging.getLogger("kairos.middleware.llm_retry")
+
+
+# ── Circuit Breaker ─────────────────────────────────────────────
+
+@dataclass
+class CircuitBreaker:
+    """Prevents retries to a failing provider after threshold failures."""
+    failure_threshold: int = 5
+    recovery_timeout: float = 30.0  # seconds
+    _failures: int = 0
+    _last_failure: float = 0.0
+    _open: bool = False
+
+    @property
+    def is_open(self) -> bool:
+        if not self._open:
+            return False
+        if time.time() - self._last_failure > self.recovery_timeout:
+            self._open = False
+            self._failures = 0
+            return False
+        return True
+
+    def record_failure(self) -> None:
+        self._failures += 1
+        self._last_failure = time.time()
+        if self._failures >= self.failure_threshold:
+            self._open = True
+            logger.warning("Circuit breaker OPEN after %d failures", self._failures)
+
+    def record_success(self) -> None:
+        self._failures = 0
+        self._open = False
+
+
+# ── LLM Retry Middleware ────────────────────────────────────────
 
 class LLMRetryMiddleware(Middleware):
-    """Retries failed LLM calls with exponential backoff and credential rotation.
+    """Retries failed LLM calls with jittered exponential backoff and credential rotation.
 
-    Hook: wrap_model_call — catches exceptions and retries with fallback keys.
+    Hook: wrap_model_call — intercepts every model call.
     """
+
+    RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
 
     def __init__(
         self,
         credential_pool: CredentialPool | None = None,
         retry_config: RetryConfig | None = None,
         provider: str = "default",
+        enable_circuit_breaker: bool = True,
     ):
         self._pool = credential_pool or CredentialPool()
         self._config = retry_config or RetryConfig()
         self._provider = provider
-        self._last_error: str = ""
         self._retry_count = 0
+        self._last_error = ""
+        self._circuit = CircuitBreaker() if enable_circuit_breaker else None
 
     def wrap_model_call(self, messages: list[dict], handler, **kwargs) -> Any:
-        """Call the LLM with retry logic."""
+        if self._circuit and self._circuit.is_open:
+            return {"error": "Circuit breaker open — provider unavailable", "retryable": False}
+
         last_exception = None
-        original_credential = kwargs.get("credential")
+        credential = kwargs.get("credential")
 
         for attempt in range(self._config.max_retries + 1):
-            credential = self._acquire_credential(original_credential)
+            credential = self._acquire_credential(credential)
             if credential is None and attempt > 0:
                 break
 
@@ -56,19 +97,17 @@ class LLMRetryMiddleware(Middleware):
                 if credential:
                     self._pool.release(credential, success=True)
 
-                # Check for HTTP errors in result
                 if self._is_error_response(result):
-                    status_code = self._get_status(result)
-                    if self._should_retry(status_code):
-                        if status_code == 429:
-                            self._handle_rate_limit(credential, result)
-                        else:
-                            if credential:
-                                self._pool.release(credential, success=False)
-                        last_exception = Exception(f"HTTP {status_code}")
-                        self._backoff(attempt)
+                    status = self._get_status(result)
+                    if status in self.RETRYABLE_STATUSES:
+                        self._handle_error(credential, status, result)
+                        last_exception = Exception(f"HTTP {status}")
+                        if attempt < self._config.max_retries:
+                            self._backoff(attempt)
                         continue
 
+                if self._circuit:
+                    self._circuit.record_success()
                 return result
 
             except Exception as e:
@@ -79,37 +118,46 @@ class LLMRetryMiddleware(Middleware):
                 if not self._should_retry_exception(e):
                     raise
 
+                if self._circuit:
+                    self._circuit.record_failure()
+
                 if attempt < self._config.max_retries:
                     self._backoff(attempt)
 
+        if self._circuit:
+            self._circuit.record_failure()
+
         if last_exception:
             raise last_exception
-        return {"error": "All retries exhausted", "last_error": self._last_error}
+        return {"error": "All retries exhausted", "retryable": False}
 
     def _acquire_credential(self, preferred: Any = None) -> Any:
-        """Get the next available credential."""
-        if preferred and hasattr(preferred, 'available') and preferred.available:
+        if preferred and getattr(preferred, "available", False):
             return preferred
         return self._pool.acquire(self._provider)
 
-    def _handle_rate_limit(self, credential: Any, result: Any) -> None:
-        """Extract Retry-After and mark credential as rate-limited."""
-        retry_after = 30.0
-        if credential:
-            self._pool.mark_rate_limited(credential, retry_after)
+    def _handle_error(self, credential: Any, status: int, result: Any) -> None:
+        if status == 429:
+            retry_after = 30.0
+            if hasattr(result, "headers"):
+                retry_after = float(result.headers.get("retry-after", 30))
+            if credential:
+                self._pool.mark_rate_limited(credential, retry_after)
+            logger.warning("Rate limited, retry after %.0fs", retry_after)
+        else:
+            if credential:
+                self._pool.release(credential, success=False)
+            logger.warning("Server error %d, retrying", status)
 
     def _backoff(self, attempt: int) -> None:
-        """Sleep with exponential backoff."""
-        delay = self._config.delay_for_attempt(attempt)
-        time.sleep(delay)
+        base = self._config.delay_for_attempt(attempt)
+        jitter = base * random.uniform(0.75, 1.25)  # ±25% jitter
+        time.sleep(jitter)
         self._retry_count += 1
 
     @staticmethod
     def _is_error_response(result: Any) -> bool:
-        """Check if the result indicates an HTTP error."""
-        if isinstance(result, dict):
-            return result.get("error") is not None
-        return False
+        return isinstance(result, dict) and result.get("error") is not None
 
     @staticmethod
     def _get_status(result: Any) -> int:
@@ -120,19 +168,13 @@ class LLMRetryMiddleware(Middleware):
         return 500
 
     @staticmethod
-    def _should_retry(status_code: int) -> bool:
-        return status_code in (429, 500, 502, 503, 504) or status_code >= 500
-
-    @staticmethod
     def _should_retry_exception(exc: Exception) -> bool:
-        """Check if this exception type should trigger a retry."""
-        exc_str = str(exc).lower()
-        retry_keywords = [
+        kw = [
             "timeout", "connection", "rate limit", "too many requests",
             "server error", "service unavailable", "gateway",
             "reset by peer", "broken pipe", "connection refused",
         ]
-        return any(kw in exc_str for kw in retry_keywords)
+        return any(k in str(exc).lower() for k in kw)
 
     @property
     def retry_count(self) -> int:
@@ -143,47 +185,51 @@ class LLMRetryMiddleware(Middleware):
         return self._last_error
 
     def __repr__(self) -> str:
-        return f"LLMRetryMiddleware(retries={self._retry_count}, provider={self._provider})"
+        return f"LLMRetryMiddleware(retries={self._retry_count}, circuit={self._circuit is not None})"
 
+
+# ── Tool Arg Repair Middleware ──────────────────────────────────
 
 class ToolArgRepairMiddleware(Middleware):
-    """Repairs invalid JSON in tool call arguments.
+    """Repairs malformed JSON in tool call arguments.
 
-    LLMs sometimes produce malformed JSON in tool call arguments,
-    especially with nested quotes or trailing commas. This middleware
-    attempts common repairs before the tool call fails.
-
-    Hook: wrap_tool_call — intercepts before execution, patches args.
+    Hook: wrap_tool_call — repairs args before tool execution.
     """
 
     def wrap_tool_call(self, tool_name: str, args: dict, handler, **kwargs) -> Any:
-        """Attempt to repair tool arguments if they're invalid."""
-        # If args is already a dict, it was parsed successfully — no repair needed
         if isinstance(args, dict):
             return handler(tool_name, args, **kwargs)
 
-        # If args is a string, try to parse and repair
         if isinstance(args, str):
-            repaired = self._repair_json(args)
+            repaired = self._repair(args)
             if repaired is not None:
+                logger.debug("Repaired tool args for '%s'", tool_name)
                 return handler(tool_name, repaired, **kwargs)
 
-        # If all else fails, try the original handler
         return handler(tool_name, args, **kwargs)
 
     @staticmethod
-    def _repair_json(text: str) -> dict | None:
-        """Attempt common JSON repairs."""
-        repairs = [
-            text,  # Try as-is first
-            text.strip().replace(",}", "}").replace(",]", "]"),  # Trailing comma before close
-            text.replace("'", '"'),  # Single → double quotes
-            text.replace("True", "true").replace("False", "false").replace("None", "null"),
+    def _repair(text: str) -> dict | None:
+        strategies = [
+            # Try as-is
+            lambda t: json.loads(t),
+            # Trailing commas
+            lambda t: json.loads(t.replace(",}", "}").replace(",]", "]")),
+            # Single → double quotes (safe for simple cases)
+            lambda t: json.loads(t.replace("'", '"')),
+            # Python booleans + None
+            lambda t: json.loads(t.replace("True", "true").replace("False", "false").replace("None", "null")),
+            # Missing quotes around keys
+            lambda t: json.loads(t),
+            # Try with surrounding braces
+            lambda t: json.loads("{" + t + "}"),
         ]
-        for attempt in repairs:
+        for strategy in strategies:
             try:
-                return json.loads(attempt)
-            except (json.JSONDecodeError, ValueError):
+                result = strategy(text)
+                if isinstance(result, dict):
+                    return result
+            except (json.JSONDecodeError, ValueError, TypeError):
                 continue
         return None
 

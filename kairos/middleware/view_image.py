@@ -1,33 +1,40 @@
-"""View image middleware — injects image data for vision-capable models.
+"""View image middleware — image injection for vision models with caching + dedup.
 
-When the agent uses view_image tool and the model supports vision, this
-middleware injects the image as base64 data into the message stream so
-the model can "see" it.
-
-DeerFlow layer 9 — runs before_model, injecting image data after tool completes.
+DeerFlow layer 9 — holds viewed images across turns, avoids re-encoding.
 """
 
 from __future__ import annotations
 
 import base64
+import logging
 from pathlib import Path
 from typing import Any
 
 from kairos.core.middleware import Middleware
 
+logger = logging.getLogger("kairos.middleware.view_image")
+
+MIME_ALIASES = {
+    "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+    "gif": "image/gif", "webp": "image/webp", "bmp": "image/bmp",
+}
+
+MAX_IMAGE_SIZE = 20 * 1024 * 1024  # 20 MB
+MAX_IMAGES_PER_TURN = 10
+CACHE_MAX = 50
+
 
 class ViewImageMiddleware(Middleware):
-    """Injects viewed images into the message stream for vision models.
+    """Injects viewed images into message stream for vision models.
 
-    Hook: before_model — checks if a view_image tool just completed
-    and injects the image as an image_url content block.
-
-    Requires: model supports vision (set supports_vision=True).
+    Caches base64 encodings to avoid re-reading the same image.
+    Tracks viewed images across turns for dedup.
     """
 
     def __init__(self, supports_vision: bool = False):
         self.supports_vision = supports_vision
-        self._viewed_images: list[str] = []
+        self._viewed: set[str] = set()  # Dedup across turns
+        self._cache: dict[str, str] = {}  # path → base64
 
     def before_model(self, state: Any, runtime: dict[str, Any]) -> dict[str, Any] | None:
         if not self.supports_vision:
@@ -37,80 +44,90 @@ class ViewImageMiddleware(Middleware):
         if not messages:
             return None
 
-        # Check if the last assistant message called view_image
-        last_ai_idx = -1
+        # Find assistant messages with pending view_image tool calls
         for i in range(len(messages) - 1, -1, -1):
-            if messages[i].get("role") == "assistant" and messages[i].get("tool_calls"):
-                last_ai_idx = i
-                break
+            if messages[i].get("role") != "assistant":
+                continue
+            tcs = messages[i].get("tool_calls", [])
+            view_calls = [tc for tc in tcs if tc.get("function", {}).get("name") == "view_image"]
+            if not view_calls:
+                continue
 
-        if last_ai_idx < 0:
-            return None
+            # Get completed tool results
+            call_ids = {tc["id"] for tc in view_calls}
+            completed = set()
+            image_paths = []
+            for m in messages[i + 1:]:
+                if m.get("role") == "tool" and m.get("tool_call_id") in call_ids:
+                    completed.add(m["tool_call_id"])
+                    content = m.get("content", "")
+                    if isinstance(content, str) and content.startswith("/"):
+                        image_paths.append(content)
 
-        ai_msg = messages[last_ai_idx]
-        view_calls = [
-            tc for tc in ai_msg.get("tool_calls", [])
-            if tc.get("function", {}).get("name") == "view_image"
-        ]
-        if not view_calls:
-            return None
+            if call_ids != completed:
+                return None  # Not done yet
 
-        # Check if all view_image calls have completed
-        tool_ids = {tc["id"] for tc in view_calls}
-        completed = set()
-        for m in messages[last_ai_idx + 1:]:
-            if m.get("role") == "tool" and m.get("tool_call_id") in tool_ids:
-                completed.add(m["tool_call_id"])
+            if not image_paths:
+                return None
 
-        if tool_ids != completed:
-            return None  # Not all view_image calls done yet
+            # Inject images (deduped)
+            injected = 0
+            for img_path in image_paths:
+                if img_path in self._viewed:
+                    continue
+                if injected >= MAX_IMAGES_PER_TURN:
+                    break
 
-        # Find the actual image paths from tool results
-        image_paths = []
-        for m in messages[last_ai_idx + 1:]:
-            if m.get("role") == "tool" and m.get("tool_call_id") in tool_ids:
-                content = m.get("content", "")
-                if isinstance(content, str) and content.startswith("/"):
-                    image_paths.append(content)
+                data = self._encode(img_path)
+                if not data:
+                    continue
 
-        if not image_paths:
-            return None
+                ext = Path(img_path).suffix.lower().lstrip(".")
+                mime = MIME_ALIASES.get(ext, "image/png")
 
-        # Inject image content
-        for img_path in image_paths:
-            try:
-                data = self._encode_image(img_path)
-                if data:
-                    ext = Path(img_path).suffix.lower().lstrip(".")
-                    mime = f"image/{ext}" if ext in ("png", "jpeg", "jpg", "gif", "webp") else "image/png"
-                    image_block = {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:{mime};base64,{data}",
-                                    "detail": "high",
-                                },
-                            }
-                        ],
-                    }
-                    state.messages.append(image_block)
-            except Exception:
-                pass
+                image_block = {
+                    "role": "user",
+                    "content": [{
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{mime};base64,{data}",
+                            "detail": "high",
+                        },
+                    }],
+                }
+                messages.append(image_block)
+                self._viewed.add(img_path)
+                injected += 1
+
+            if injected:
+                logger.debug("Injected %d images", injected)
+            break
 
         return None
 
-    @staticmethod
-    def _encode_image(path: str) -> str | None:
-        """Read and base64-encode an image file."""
+    def after_agent(self, state: Any, runtime: dict[str, Any]) -> dict[str, Any] | None:
+        """Clear dedup set for next session."""
+        self._viewed.clear()
+        # Trim cache
+        if len(self._cache) > CACHE_MAX:
+            oldest = sorted(self._cache.keys())[:len(self._cache) - CACHE_MAX]
+            for k in oldest:
+                del self._cache[k]
+        return None
+
+    def _encode(self, path: str) -> str | None:
+        if path in self._cache:
+            return self._cache[path]
         try:
             p = Path(path)
-            if not p.exists() or p.stat().st_size > 20 * 1024 * 1024:  # 20 MB limit
+            if not p.exists() or p.stat().st_size > MAX_IMAGE_SIZE:
                 return None
-            return base64.b64encode(p.read_bytes()).decode("utf-8")
+            data = base64.b64encode(p.read_bytes()).decode()
+            if len(self._cache) < CACHE_MAX:
+                self._cache[path] = data
+            return data
         except Exception:
             return None
 
     def __repr__(self) -> str:
-        return f"ViewImageMiddleware(supports_vision={self.supports_vision})"
+        return f"ViewImageMiddleware(vision={self.supports_vision}, cache={len(self._cache)})"

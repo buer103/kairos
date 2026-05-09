@@ -260,21 +260,21 @@ from kairos.middleware.llm_retry import LLMRetryMiddleware, ToolArgRepairMiddlew
 
 def test_tool_arg_repair_trailing_comma():
     mw = ToolArgRepairMiddleware()
-    repaired = mw._repair_json('{"key": "val",}')
+    repaired = mw._repair('{"key": "val",}')
     assert repaired == {"key": "val"}
 
 
 
 def test_tool_arg_repair_single_quotes():
     mw = ToolArgRepairMiddleware()
-    repaired = mw._repair_json("{'key': 'val'}")
+    repaired = mw._repair("{'key': 'val'}")
     assert repaired == {"key": "val"}
 
 
 
 def test_tool_arg_repair_python_bool():
     mw = ToolArgRepairMiddleware()
-    repaired = mw._repair_json('{"key": True, "other": False, "none": None}')
+    repaired = mw._repair('{"key": True, "other": False, "none": None}')
     assert repaired == {"key": True, "other": False, "none": None}
 
 

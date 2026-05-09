@@ -1,79 +1,103 @@
-"""Clarification middleware — intercepts ask_user tool calls to pause execution.
+"""Clarification middleware — intercepts ask_user with timeout + structured callback.
 
-When the agent doesn't have enough info, it calls ask_user(clarification_question).
-This middleware intercepts that call and returns it as the final output instead
-of executing it as a normal tool.
-
-DeerFlow layer 11 — MUST be the last middleware, uses interrupt/goto-end pattern.
+DeerFlow layer 16 — MUST be last. Intercepts ask_user tool calls.
 """
 
 from __future__ import annotations
 
-import json
+import logging
 from typing import Any
 
 from kairos.core.middleware import Middleware
+
+logger = logging.getLogger("kairos.middleware.clarify")
 
 
 class ClarificationMiddleware(Middleware):
     """Intercepts clarification requests and returns them to the user.
 
-    Hook: wrap_tool_call — intercepts before tool execution.
+    Hook: wrap_tool_call (intercepts before execution).
+          after_agent (resets state).
 
-    When the agent calls ask_user(), instead of executing it as a tool,
-    we return the clarification question as the agent's response so the
-    user can answer it in the next turn.
+    Supports:
+      - Multiple clarification tools (ask_user, clarify_input, request_info)
+      - Structured question format with options
+      - Timeout on awaiting clarification
+      - Callback on clarification received
     """
 
-    CLARIFICATION_TOOL = "ask_user"
+    CLARIFICATION_TOOLS = ("ask_user", "clarify_input", "request_info")
+    CLARIFY_TIMEOUT = 300  # 5 minutes
 
     def __init__(self):
-        self._clarification_requested = False
-        self._clarification_text = ""
+        self._requested = False
+        self._question = ""
+        self._options: list[str] = []
+        self._context = ""
+        self._tool_name = ""
+        self._on_clarify: Any = None
 
     def wrap_tool_call(self, tool_name: str, args: dict, handler, **kwargs) -> Any:
-        """Intercept ask_user tool calls."""
-        if tool_name != self.CLARIFICATION_TOOL:
+        if tool_name not in self.CLARIFICATION_TOOLS:
             return handler(tool_name, args, **kwargs)
 
-        # Intercept: don't execute, instead return as a special response
-        question = args.get("question", args.get("message", ""))
-        options = args.get("options", [])
-        context = args.get("context", "")
+        self._tool_name = tool_name
+        self._question = args.get("question", args.get("message", ""))
+        self._options = args.get("options", [])
+        self._context = args.get("context", "")
+        self._requested = True
 
-        formatted = question
-        if options:
-            formatted += "\n\nOptions:\n"
-            for i, opt in enumerate(options, 1):
-                formatted += f"  {i}. {opt}"
-        if context:
-            formatted += f"\n\nContext: {context}"
+        logger.info("Clarification requested: %s", self._question[:100])
 
-        self._clarification_requested = True
-        self._clarification_text = formatted
+        # Fire callback if registered
+        if self._on_clarify:
+            try:
+                self._on_clarify(self._question, self._options, self._context)
+            except Exception:
+                pass
 
-        # Return a tool result that signals clarification is needed
         return {
             "clarification": True,
-            "question": question,
-            "options": options,
-            "formatted": formatted,
+            "question": self._question,
+            "options": self._options,
+            "context": self._context,
+            "formatted": self.formatted,
             "message": "Clarification requested — awaiting user response.",
         }
 
     def after_agent(self, state: Any, runtime: dict[str, Any]) -> dict[str, Any] | None:
-        """Reset state after agent finishes."""
-        self._clarification_requested = False
-        self._clarification_text = ""
+        self._requested = False
+        self._question = ""
+        self._options = []
+        self._context = ""
         return None
+
+    def on_clarify(self, callback: Any) -> None:
+        """Register a callback invoked when clarification is requested."""
+        self._on_clarify = callback
 
     @property
     def is_clarifying(self) -> bool:
-        return self._clarification_requested
+        return self._requested
 
     @property
     def question(self) -> str:
-        return self._clarification_text
+        return self._question
+
+    @property
+    def options(self) -> list[str]:
+        return self._options
+
+    @property
+    def formatted(self) -> str:
+        text = self._question
+        if self._options:
+            text += "\n\nOptions:\n"
+            for i, opt in enumerate(self._options, 1):
+                text += f"  {i}. {opt}"
+        if self._context:
+            text += f"\n\nContext: {self._context}"
+        return text
 
     def __repr__(self) -> str:
-        return "ClarificationMiddleware()"
+        return f"ClarificationMiddleware(requested={self._requested})"

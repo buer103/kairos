@@ -58,7 +58,7 @@ from kairos.middleware.subagent_limit import SubagentLimitMiddleware
 from kairos.middleware.clarify import ClarificationMiddleware
 from kairos.middleware.thread_data import ThreadDataMiddleware
 from kairos.middleware.todo import TodoMiddleware
-from kairos.middleware.title import TitleMiddleware
+from kairos.middleware.title import TitleMiddleware, MAX_TITLE_LENGTH
 from kairos.middleware.uploads import UploadsMiddleware
 from kairos.middleware.view_image import ViewImageMiddleware
 from kairos.providers.credential import CredentialPool, Credential, RetryConfig
@@ -242,7 +242,7 @@ from kairos.middleware.subagent_limit import SubagentLimitMiddleware
 from kairos.middleware.clarify import ClarificationMiddleware
 from kairos.middleware.thread_data import ThreadDataMiddleware
 from kairos.middleware.todo import TodoMiddleware
-from kairos.middleware.title import TitleMiddleware
+from kairos.middleware.title import TitleMiddleware, MAX_TITLE_LENGTH
 from kairos.middleware.uploads import UploadsMiddleware
 from kairos.middleware.view_image import ViewImageMiddleware
 
@@ -351,7 +351,7 @@ def test_title_middleware_truncation():
         {"role": "user", "content": "A" * 100 + "\nmore text here"},
     ]
     mw.after_agent(state, {})
-    assert len(mw.title) <= TitleMiddleware.MAX_TITLE_LENGTH
+    assert len(mw.title) <= MAX_TITLE_LENGTH
 
 
 
