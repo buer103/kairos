@@ -1,6 +1,6 @@
-"""Middleware package — Kairos middleware pipeline (16 layers).
+"""Middleware package — Kairos middleware pipeline (17 layers).
 
-Layer ordering follows DeerFlow's dependency chain + Kairos additions:
+Layer ordering follows DeerFlow dependency chain + Kairos additions:
 
   1. ThreadData         — workspace dirs
   2. Uploads            — file injection
@@ -18,6 +18,10 @@ Layer ordering follows DeerFlow's dependency chain + Kairos additions:
  14. Title              — auto-generate title
  15. MemoryMiddleware   — submit to memory queue
  16. Clarification      — intercept ask_user (MUST be last)
+
+Optional plug-ins:
+  - SandboxMiddleware   — route tools to container (before tool execution)
+  - SecurityMiddleware  — input/output/tool guardrails
 """
 
 from kairos.middleware.evidence import EvidenceTracker
@@ -35,6 +39,7 @@ from kairos.middleware.view_image import ViewImageMiddleware
 from kairos.middleware.llm_retry import LLMRetryMiddleware, ToolArgRepairMiddleware
 from kairos.middleware.logging_mw import LoggingMiddleware
 from kairos.middleware.sandbox_mw import SandboxMiddleware
+from kairos.middleware.security_mw import SecurityMiddleware
 
 # Re-export MemoryMiddleware from memory package
 from kairos.memory.middleware import MemoryMiddleware
@@ -57,5 +62,6 @@ __all__ = [
     "ToolArgRepairMiddleware",
     "LoggingMiddleware",
     "SandboxMiddleware",
+    "SecurityMiddleware",
     "MemoryMiddleware",
 ]

@@ -17,7 +17,7 @@ def test_version(capsys):
         main()
         captured = capsys.readouterr()
         assert "kairos" in captured.out
-        assert "0.9" in captured.out
+        assert "0.10" in captured.out
     finally:
         sys.argv = old_argv
 

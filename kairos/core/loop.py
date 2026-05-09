@@ -1,12 +1,16 @@
-"""Agent Loop — the core engine with budget control, interrupt, checkpoint, and error handling.
+"""Agent Loop — the core engine with budget control, interrupt, checkpoint,
+credential rotation, model fallback, and error handling.
 
 Handles:
   - Token + iteration budget with grace calls
   - Interrupt/resume via signals + checkpoint persistence
-  - Error classification (rate_limit / auth / network / tool)
+  - Error classification (rate_limit / auth / network / tool / context_overflow)
   - Reasoning content extraction
-  - Parallel tool execution
-  - Model fallback chain
+  - Parallel tool execution (sequential for now, parallel-ready)
+  - Model fallback chain with health tracking
+  - Credential pool rotation (acquire/release/mark_rate_limited)
+  - Provider factory (OpenAI-compatible / Anthropic native / Gemini native)
+  - Trajectory saving (JSONL)
   - Prefill support
 """
 
@@ -15,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import signal
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -31,11 +36,15 @@ from kairos.tools.registry import execute_tool, get_tool_schemas
 logger = logging.getLogger("kairos.agent")
 
 
-# ── Budget ──────────────────────────────────────────────────────
+# ============================================================================
+# Budget
+# ============================================================================
+
 
 @dataclass
 class Budget:
     """Token + iteration budget tracker."""
+
     max_iterations: int = 20
     max_tokens: int = 120000
     budget_ratio: float = 0.85
@@ -60,19 +69,20 @@ class Budget:
 
     @property
     def can_grace_call(self) -> bool:
-        """Allow one grace call when budget is exhausted but close to finishing."""
         return self.exhausted and not self.grace_call_used
 
     def consume(self, tokens: int) -> None:
         self.tokens_used += tokens
 
     def step(self) -> bool:
-        """Increment iteration counter. Returns True if under budget."""
         self.iterations += 1
         return self.iterations <= self.max_iterations
 
 
-# ── Error Classification ────────────────────────────────────────
+# ============================================================================
+# Error Classification
+# ============================================================================
+
 
 class ErrorKind(str, Enum):
     RATE_LIMIT = "rate_limit"
@@ -99,7 +109,7 @@ def classify_error(exc: Exception | dict) -> AgentError:
         status = exc.get("status", exc.get("status_code", 0))
     else:
         msg = str(exc)
-        status = 0
+        status = getattr(exc, "status_code", 0) or getattr(exc, "status", 0)
 
     msg_lower = msg.lower()
 
@@ -114,17 +124,94 @@ def classify_error(exc: Exception | dict) -> AgentError:
     return AgentError(ErrorKind.UNKNOWN, msg, retryable=False)
 
 
-# ── Agent ───────────────────────────────────────────────────────
+# ============================================================================
+# Model Health Tracker (for fallback decisions)
+# ============================================================================
+
+
+@dataclass
+class ModelHealth:
+    """Tracks health of a model/provider for fallback decisions."""
+
+    consecutive_failures: int = 0
+    total_calls: int = 0
+    total_failures: int = 0
+    last_failure_time: float = 0.0
+    cooldown_until: float = 0.0
+
+    @property
+    def is_healthy(self) -> bool:
+        if self.consecutive_failures >= 3:
+            return False
+        if self.cooldown_until and time.time() < self.cooldown_until:
+            return False
+        return True
+
+    @property
+    def failure_rate(self) -> float:
+        if self.total_calls == 0:
+            return 0.0
+        return self.total_failures / self.total_calls
+
+    def record_success(self) -> None:
+        self.consecutive_failures = 0
+        self.total_calls += 1
+
+    def record_failure(self, kind: ErrorKind) -> None:
+        self.consecutive_failures += 1
+        self.total_failures += 1
+        self.total_calls += 1
+        self.last_failure_time = time.time()
+        if kind == ErrorKind.RATE_LIMIT:
+            self.cooldown_until = time.time() + 30
+
+
+# ============================================================================
+# Provider Factory
+# ============================================================================
+
+
+class ProviderFactory:
+    """Creates the right provider based on ModelConfig metadata.
+
+    Detection logic:
+      - config.provider == "anthropic" or base_url contains "anthropic" -> AnthropicProvider
+      - config.provider == "gemini" or base_url contains "googleapis" -> GeminiProvider
+      - Otherwise -> ModelProvider (OpenAI-compatible)
+    """
+
+    @staticmethod
+    def create(config: ModelConfig):
+        """Instantiate the correct provider for a ModelConfig."""
+        provider_name = getattr(config, "provider", "").lower()
+        base_url = getattr(config, "base_url", "").lower()
+
+        if provider_name == "anthropic" or "anthropic" in base_url:
+            from kairos.providers.anthropic_adapter import AnthropicProvider
+            return AnthropicProvider(config)
+
+        if provider_name == "gemini" or "googleapis" in base_url:
+            from kairos.providers.gemini_adapter import GeminiProvider
+            return GeminiProvider(config)
+
+        return ModelProvider(config)
+
+
+# ============================================================================
+# Agent
+# ============================================================================
+
 
 class Agent:
-    """Core Kairos agent with budget control, interrupt, and checkpoint.
+    """Core Kairos agent with budget control, interrupt, checkpoint,
+    credential rotation, and model fallback.
 
     Usage:
         agent = Agent.build_default(model=ModelConfig(api_key="..."))
         result = agent.run("Hello")
     """
 
-    # ── Factory ────────────────────────────────────────────────
+    # ---- Factory ----------------------------------------------------------
 
     @classmethod
     def build_default(
@@ -144,15 +231,26 @@ class Agent:
         retry_config: Any = None,
         fallback_models: list[ModelConfig] | None = None,
         checkpoint_dir: str | None = None,
+        trajectory_dir: str | None = None,
         **template_vars,
     ) -> Agent:
         """Build an Agent with full 17-layer pipeline."""
         from kairos.middleware import (
-            ThreadDataMiddleware, UploadsMiddleware, DanglingToolCallMiddleware,
-            SkillLoader, ContextCompressor, TodoMiddleware, ConfidenceScorer,
-            EvidenceTracker, SubagentLimitMiddleware, TitleMiddleware,
-            ClarificationMiddleware, ViewImageMiddleware, MemoryMiddleware,
-            LLMRetryMiddleware, ToolArgRepairMiddleware,
+            ThreadDataMiddleware,
+            UploadsMiddleware,
+            DanglingToolCallMiddleware,
+            SkillLoader,
+            ContextCompressor,
+            TodoMiddleware,
+            ConfidenceScorer,
+            EvidenceTracker,
+            SubagentLimitMiddleware,
+            TitleMiddleware,
+            ClarificationMiddleware,
+            ViewImageMiddleware,
+            MemoryMiddleware,
+            LLMRetryMiddleware,
+            ToolArgRepairMiddleware,
         )
         from kairos.providers.credential import CredentialPool, RetryConfig
 
@@ -172,10 +270,12 @@ class Agent:
             layers.append(ViewImageMiddleware(supports_vision=True))
         layers.extend([EvidenceTracker(), ToolArgRepairMiddleware(), ConfidenceScorer()])
         if credential_pool:
-            layers.append(LLMRetryMiddleware(
-                credential_pool=credential_pool,
-                retry_config=retry_config or RetryConfig(),
-            ))
+            layers.append(
+                LLMRetryMiddleware(
+                    credential_pool=credential_pool,
+                    retry_config=retry_config or RetryConfig(),
+                )
+            )
         layers.extend([SubagentLimitMiddleware(), TitleMiddleware()])
         layers.append(ClarificationMiddleware())
 
@@ -191,10 +291,11 @@ class Agent:
             skills_dir=skills_dir,
             fallback_models=fallback_models,
             checkpoint_dir=checkpoint_dir,
+            trajectory_dir=trajectory_dir,
             **template_vars,
         )
 
-    # ── Constructor ────────────────────────────────────────────
+    # ---- Constructor ------------------------------------------------------
 
     def __init__(
         self,
@@ -218,24 +319,48 @@ class Agent:
         max_tokens: int = 120000,
         fallback_models: list[ModelConfig] | None = None,
         checkpoint_dir: str | None = None,
+        trajectory_dir: str | None = None,
+        credential_pool: Any = None,
         **template_vars,
     ):
-        self.model = ModelProvider(model or ModelConfig(api_key=""))
+        # ---- Model chain ----
+        self._primary_config = model or ModelConfig(api_key="")
+        self._primary_provider = ProviderFactory.create(self._primary_config)
+        self._fallback_configs = fallback_models or []
+        self._fallback_providers = [ProviderFactory.create(c) for c in self._fallback_configs]
+        self._provider_chain = [self._primary_provider] + self._fallback_providers
+        self._active_provider_index = 0
+
+        # ---- Model health ----
+        self._health: dict[int, ModelHealth] = {
+            i: ModelHealth() for i in range(len(self._provider_chain))
+        }
+
+        # ---- Credential pool ----
+        self._credential_pool = credential_pool
+        self._active_credential = None  # currently held credential
+
+        # ---- Budget ----
         self.budget = Budget(max_iterations=max_iterations, max_tokens=max_tokens)
 
-        # Fallback chain
-        self._fallback_models = fallback_models or []
-        self._active_model_index = 0
-
-        # Interrupt + checkpoint
+        # ---- Interrupt + checkpoint ----
         self._interrupted = False
+        self._interrupt_lock = threading.Lock()
         self._checkpoint_dir = Path(
             checkpoint_dir or Path.home() / ".kairos" / "checkpoints"
         )
         self._checkpoint_dir.mkdir(parents=True, exist_ok=True)
         self._setup_signal_handlers()
 
-        # Wire up infrastructure
+        # ---- Trajectory ----
+        self._trajectory_dir = Path(
+            trajectory_dir or Path.home() / ".kairos" / "trajectories"
+        )
+        self._trajectory_dir.mkdir(parents=True, exist_ok=True)
+        self._trajectory_path: Path | None = None
+        self._trajectory_events: list[dict] = []
+
+        # ---- Wire up infrastructure ----
         if rag_store:
             from kairos.tools.rag_search import set_rag_store
             set_rag_store(rag_store)
@@ -246,24 +371,46 @@ class Agent:
         if enable_subagents:
             from kairos.agents.executor import SubAgentExecutor
             from kairos.agents.factory import set_executor
-            set_executor(SubAgentExecutor(self.model))
+            set_executor(SubAgentExecutor(self._primary_provider))
         from kairos.tools.skills_tool import set_skill_manager
         from kairos.skills.manager import SkillManager
         set_skill_manager(SkillManager(skills_dir))
 
-        # Pipeline
+        # ---- Pipeline ----
         self.pipeline = MiddlewarePipeline(middlewares or [])
 
-        # System prompt
+        # ---- System prompt ----
         self._prompt_builder = prompt_builder or PromptBuilder(
-            template=system_template, agent_name=agent_name,
-            role_description=role_description, soul=soul, guidelines=guidelines,
-            response_style=response_style, knowledge_description=knowledge_description,
-            memory_description=memory_description, **template_vars,
+            template=system_template,
+            agent_name=agent_name,
+            role_description=role_description,
+            soul=soul,
+            guidelines=guidelines,
+            response_style=response_style,
+            knowledge_description=knowledge_description,
+            memory_description=memory_description,
+            **template_vars,
         )
         self.system_prompt = self._prompt_builder.build()
 
-    # ── Run ────────────────────────────────────────────────────
+    # ---- Properties -------------------------------------------------------
+
+    @property
+    def _active_provider(self):
+        return self._provider_chain[self._active_provider_index]
+
+    @property
+    def model(self):
+        """Backward-compatible alias for _primary_provider."""
+        return self._primary_provider
+
+    @model.setter
+    def model(self, value):
+        """Allow replacing the primary provider (e.g., for tests)."""
+        self._primary_provider = value
+        self._provider_chain[0] = value
+
+    # ---- Run --------------------------------------------------------------
 
     def run(self, user_message: str, prefill: str | None = None) -> dict[str, Any]:
         """Run the agent loop one-shot. Returns {content, confidence, evidence}."""
@@ -287,23 +434,35 @@ class Agent:
         self.budget.tokens_used = 0
         self.budget.grace_call_used = False
         self._interrupted = False
+        self._active_provider_index = 0
+
+        # Start trajectory
+        self._start_trajectory(user_message)
 
         try:
-            return self._execute_loop(state, runtime)
+            result = self._execute_loop(state, runtime)
+            self._log_trajectory_event("agent_done", {
+                "content": result.get("content", "")[:200],
+                "confidence": result.get("confidence"),
+            })
+            return result
         finally:
             if not self._interrupted:
                 self.pipeline.after_agent(state, runtime)
+            self._release_credential()
+            self._finish_trajectory()
 
-    # ── Core Loop ──────────────────────────────────────────────
+    # ---- Core Loop --------------------------------------------------------
 
     def _execute_loop(self, state: ThreadState, runtime: dict[str, Any]) -> dict[str, Any]:
-        """Main agent loop with budget, interrupt, and error handling."""
+        """Main agent loop with budget, interrupt, credential rotation, and model fallback."""
         messages = state.messages
         case = state.case
 
         while not self.budget.exhausted or self.budget.can_grace_call:
-            # ── Interrupt check ──────────────────────────────
+            # ---- Interrupt check ----
             if self._interrupted:
+                self._log_trajectory_event("interrupted", {})
                 return {
                     "content": "[Interrupted]",
                     "confidence": None,
@@ -315,42 +474,54 @@ class Agent:
 
             tool_schemas = get_tool_schemas() or None
 
-            # ── Model call with error handling ────────────────
-            response = self._call_model(messages, tool_schemas, state, runtime)
+            # ---- Credential acquire ----
+            self._acquire_credential()
+
+            # ---- Model call with error handling and fallback ----
+            response = self._call_model_with_fallback(messages, tool_schemas, state, runtime)
 
             # Error response
             if isinstance(response, dict) and "error" in response:
                 err = classify_error(response)
+                self._log_trajectory_event("error", {
+                    "kind": err.kind.value,
+                    "message": err.message[:200],
+                })
                 if err.kind == ErrorKind.CONTEXT_OVERFLOW:
                     return {
                         "content": f"Context window exceeded. {err.message}",
-                        "confidence": None, "evidence": [],
+                        "confidence": None,
+                        "evidence": [],
                     }
                 if err.retryable:
                     continue
                 return {
                     "content": f"Error: {err.message}",
-                    "confidence": None, "evidence": [],
+                    "confidence": None,
+                    "evidence": [],
                 }
 
-            msg = response.choices[0].message
+            # ---- Extract usage ----
+            self._extract_usage(response)
             self.pipeline.after_model(state, runtime)
 
-            # ── Reasoning content ────────────────────────────
+            msg = response.choices[0].message
             reasoning = getattr(msg, "reasoning_content", None)
 
-            # ── Tool calls ───────────────────────────────────
+            # ---- Tool calls ----
             if msg.tool_calls:
                 tool_results = self._execute_tools(msg, messages, state)
                 self.budget.step()
                 continue
 
-            # ── Done — no more tool calls ────────────────────
-            messages.append({
+            # ---- Done ----
+            assistant_msg = {
                 "role": "assistant",
                 "content": msg.content,
-                **({"reasoning": reasoning} if reasoning else {}),
-            })
+            }
+            if reasoning:
+                assistant_msg["reasoning"] = reasoning
+            messages.append(assistant_msg)
 
             return {
                 "content": msg.content,
@@ -359,45 +530,112 @@ class Agent:
                 "evidence": self._format_evidence(case),
             }
 
-        # ── Budget exhausted ─────────────────────────────────
+        # Budget exhausted
         return {
             "content": "Maximum context or iterations reached.",
             "confidence": None,
             "evidence": self._format_evidence(case),
         }
 
-    # ── Model Call ──────────────────────────────────────────────
+    # ---- Model Call with Fallback -----------------------------------------
 
-    def _call_model(self, messages, tool_schemas, state, runtime) -> Any:
-        """Call the model, falling back on persistent errors."""
+    def _call_model_with_fallback(
+        self, messages, tool_schemas, state, runtime
+    ) -> Any:
+        """Call the model with credential rotation and provider fallback.
+
+        Tries each provider in the chain until one succeeds. Rotates credentials
+        on rate limits. Tracks health for future routing decisions.
+        """
         last_error = None
+        providers_tried = 0
 
-        for attempt in range(len(self._fallback_models) + 1):
+        while providers_tried < len(self._provider_chain):
+            provider_idx = self._active_provider_index
+            health = self._health[provider_idx]
+
+            if not health.is_healthy:
+                self._switch_provider()
+                providers_tried += 1
+                continue
+
             try:
-                return self.pipeline.wrap_model_call(
+                result = self.pipeline.wrap_model_call(
                     messages,
-                    lambda msgs, **kw: self._current_model.chat(msgs, tools=tool_schemas),
+                    lambda msgs, **kw: self._active_provider.chat(
+                        msgs, tools=tool_schemas
+                    ),
                 )
+                health.record_success()
+                if self._active_credential:
+                    self._release_credential(success=True)
+                return result
             except Exception as e:
-                last_error = e
                 err = classify_error(e)
+                health.record_failure(err.kind)
+                last_error = e
+
+                if err.kind == ErrorKind.RATE_LIMIT:
+                    # Try rotating credential within the same provider
+                    if self._credential_pool and self._active_credential:
+                        self._credential_pool.mark_rate_limited(
+                            self._active_credential, retry_after=30
+                        )
+                        self._active_credential = None
+                        self._acquire_credential()
+                        if self._active_credential:
+                            providers_tried -= 1  # retry same provider with new key
+                            continue
+
                 if not err.retryable:
-                    if attempt < len(self._fallback_models):
-                        logger.warning("Falling back to model %d/%d", attempt + 1, len(self._fallback_models))
-                        self._active_model_index = (self._active_model_index + 1) % (len(self._fallback_models) + 1)
-                        continue
-                    raise
+                    self._switch_provider()
+                    providers_tried += 1
+                    continue
+
+                # Retryable, switch provider
+                self._switch_provider()
+                providers_tried += 1
 
         return {"error": str(last_error)}
 
-    @property
-    def _current_model(self) -> ModelProvider:
-        if self._active_model_index == 0 or not self._fallback_models:
-            return self.model
-        config = self._fallback_models[self._active_model_index - 1]
-        return ModelProvider(config)
+    def _switch_provider(self) -> None:
+        """Move to the next provider in the chain."""
+        self._release_credential()
+        self._active_provider_index = (self._active_provider_index + 1) % len(self._provider_chain)
+        logger.warning(
+            "Switched to provider %d/%d",
+            self._active_provider_index + 1,
+            len(self._provider_chain),
+        )
 
-    # ── Tool Execution ──────────────────────────────────────────
+    # ---- Credential Management --------------------------------------------
+
+    def _acquire_credential(self) -> None:
+        """Acquire a credential for the active provider if pool is configured."""
+        if not self._credential_pool:
+            return
+        self._active_credential = self._credential_pool.acquire("default")
+
+    def _release_credential(self, success: bool = True) -> None:
+        """Release the currently held credential."""
+        if self._credential_pool and self._active_credential:
+            self._credential_pool.release(self._active_credential, success=success)
+            self._active_credential = None
+
+    # ---- Usage Extraction -------------------------------------------------
+
+    def _extract_usage(self, response: Any) -> None:
+        """Extract token usage from API response and update budget."""
+        try:
+            usage = getattr(response, "usage", None)
+            if usage and hasattr(usage, "total_tokens"):
+                self.budget.consume(usage.total_tokens)
+            elif isinstance(usage, dict) and "total_tokens" in usage:
+                self.budget.consume(usage["total_tokens"])
+        except Exception:
+            pass
+
+    # ---- Tool Execution ---------------------------------------------------
 
     def _execute_tools(self, msg, messages, state) -> list[dict]:
         """Execute tool calls sequentially. Returns list of tool results."""
@@ -409,15 +647,29 @@ class Agent:
             except json.JSONDecodeError:
                 tool_args = {}
 
+            self._log_trajectory_event("tool_start", {
+                "tool": tool_name,
+                "args": {k: str(v)[:100] for k, v in tool_args.items()},
+            })
+
             try:
                 result = self.pipeline.wrap_tool_call(
-                    tool_name, tool_args,
+                    tool_name,
+                    tool_args,
                     lambda name, args, **kw: execute_tool(name, args),
                     state=state,
                 )
+                self._log_trajectory_event("tool_done", {
+                    "tool": tool_name,
+                    "success": True,
+                })
             except Exception as e:
                 err = classify_error(e)
                 result = {"error": str(e), "kind": err.kind.value}
+                self._log_trajectory_event("tool_error", {
+                    "tool": tool_name,
+                    "error": str(e)[:200],
+                })
 
             results.append(result)
 
@@ -440,7 +692,7 @@ class Agent:
 
         return results
 
-    # ── Interrupt + Checkpoint ──────────────────────────────────
+    # ---- Interrupt + Checkpoint -------------------------------------------
 
     @property
     def interrupted(self) -> bool:
@@ -448,19 +700,28 @@ class Agent:
 
     def interrupt(self) -> None:
         """Request graceful shutdown at next iteration boundary."""
-        self._interrupted = True
+        with self._interrupt_lock:
+            self._interrupted = True
+        logger.info("Interrupt requested")
 
-    def save_checkpoint(self, state: ThreadState, runtime: dict, name: str = "") -> Path:
+    def save_checkpoint(
+        self, state: ThreadState, runtime: dict, name: str = ""
+    ) -> Path:
         """Save agent state for later resume."""
         path = self._checkpoint_dir / f"{name or uuid.uuid4().hex[:8]}.json"
         data = {
             "messages": state.messages,
             "metadata": state.metadata,
-            "runtime": {k: v for k, v in runtime.items() if isinstance(v, (str, int, float, bool, list, dict))},
+            "runtime": {
+                k: v
+                for k, v in runtime.items()
+                if isinstance(v, (str, int, float, bool, list, dict))
+            },
             "budget": {
                 "iterations": self.budget.iterations,
                 "tokens_used": self.budget.tokens_used,
             },
+            "provider_index": self._active_provider_index,
             "timestamp": time.time(),
         }
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str))
@@ -479,13 +740,18 @@ class Agent:
         runtime = data.get("runtime", {})
         self.budget.iterations = data.get("budget", {}).get("iterations", 0)
         self.budget.tokens_used = data.get("budget", {}).get("tokens_used", 0)
+        self._active_provider_index = data.get("provider_index", 0)
         logger.info("Checkpoint loaded: %s (%d messages)", name, len(state.messages))
         return state, runtime
 
     def list_checkpoints(self) -> list[dict]:
         """List available checkpoints."""
         results = []
-        for f in sorted(self._checkpoint_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        for f in sorted(
+            self._checkpoint_dir.glob("*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        ):
             try:
                 d = json.loads(f.read_text())
                 results.append({
@@ -497,26 +763,114 @@ class Agent:
                 pass
         return results
 
-    # ── Signal handlers ─────────────────────────────────────────
+    # ---- Trajectory -------------------------------------------------------
+
+    def _start_trajectory(self, user_message: str) -> None:
+        """Begin a new trajectory recording."""
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        session_id = getattr(self, "_session_id", "oneshot")
+        self._trajectory_path = self._trajectory_dir / f"{session_id}_{ts}.jsonl"
+        self._trajectory_events = []
+        self._log_trajectory_event("session_start", {
+            "user_message": user_message[:200],
+            "model": getattr(self._primary_config, "model", "unknown"),
+        })
+
+    def _log_trajectory_event(self, event_type: str, data: dict) -> None:
+        """Record a trajectory event."""
+        event = {
+            "timestamp": time.time(),
+            "type": event_type,
+            "iteration": self.budget.iterations,
+            **data,
+        }
+        self._trajectory_events.append(event)
+
+    def _finish_trajectory(self) -> None:
+        """Write trajectory to disk."""
+        if not self._trajectory_path or not self._trajectory_events:
+            return
+        try:
+            with open(self._trajectory_path, "w") as f:
+                for event in self._trajectory_events:
+                    f.write(json.dumps(event, ensure_ascii=False, default=str) + "\n")
+            logger.info("Trajectory saved: %s (%d events)", self._trajectory_path, len(self._trajectory_events))
+        except Exception as e:
+            logger.warning("Failed to save trajectory: %s", e)
+
+    def list_trajectories(self) -> list[dict]:
+        """List saved trajectories."""
+        results = []
+        for f in sorted(
+            self._trajectory_dir.glob("*.jsonl"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        ):
+            try:
+                lines = f.read_text().strip().split("\n")
+                first = json.loads(lines[0]) if lines else {}
+                results.append({
+                    "name": f.stem,
+                    "events": len(lines),
+                    "timestamp": first.get("timestamp"),
+                    "model": first.get("model"),
+                })
+            except Exception:
+                pass
+        return results
+
+    # ---- Health / Status --------------------------------------------------
+
+    def health_status(self) -> dict:
+        """Return health status for all providers in the chain."""
+        return {
+            "active_provider": self._active_provider_index,
+            "budget": {
+                "iterations": self.budget.iterations,
+                "tokens_used": self.budget.tokens_used,
+                "remaining": self.budget.remaining,
+                "exhausted": self.budget.exhausted,
+            },
+            "providers": [
+                {
+                    "index": i,
+                    "config_model": getattr(
+                        (self._primary_config if i == 0 else self._fallback_configs[i - 1]),
+                        "model", "unknown",
+                    ),
+                    "consecutive_failures": h.consecutive_failures,
+                    "failure_rate": round(h.failure_rate, 3),
+                    "is_healthy": h.is_healthy,
+                }
+                for i, h in self._health.items()
+            ],
+        }
+
+    # ---- Helpers ----------------------------------------------------------
 
     def _setup_signal_handlers(self) -> None:
         def _handler(signum, frame):
-            self._interrupted = True
+            with self._interrupt_lock:
+                self._interrupted = True
             logger.info("Signal %d received — interrupt requested", signum)
+
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:
                 signal.signal(sig, _handler)
             except (ValueError, OSError):
                 pass
 
-    # ── Helpers ─────────────────────────────────────────────────
-
     @staticmethod
     def _format_evidence(case) -> list[dict]:
         if not case or not case.steps:
             return []
         return [
-            {"step": s.id, "tool": s.tool, "args": s.args,
-             "result": s.result, "duration_ms": s.duration_ms}
+            {
+                "step": s.id,
+                "tool": s.tool,
+                "args": s.args,
+                "result": s.result,
+                "duration_ms": s.duration_ms,
+            }
             for s in case.steps
         ]
