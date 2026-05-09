@@ -176,7 +176,7 @@ def test_skill_loader_with_skills(tmp_path):
 
 
 def test_evidence_db_save_load(tmp_path):
-    db = EvidenceDB(base_path=tmp_path)
+    db = EvidenceDB(db_path=str(tmp_path / "evidence.db"))
     case = Case(id="case-1")
     case.add_step("rag_search", {"query": "test"})
     case.conclusion = "All clear"
