@@ -78,7 +78,7 @@ def test_all_tools_registered():
 
 def test_tool_schemas():
     schemas = get_tool_schemas()
-    assert len(schemas) == 3
+    assert len(schemas) >= 9  # 3 built-in + 6 new tools
     for s in schemas:
         assert s["type"] == "function"
         assert "name" in s["function"]

@@ -3,17 +3,24 @@ Kairos — The right tool, at the right moment.
 An AI agent framework inheriting from Hermes and DeerFlow.
 """
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 from kairos.core.loop import Agent
 from kairos.core.stateful_agent import StatefulAgent
 from kairos.tools.registry import register_tool
 
-# Register built-in tools
+# Register built-in tools (imports trigger @register_tool decorators)
 from kairos.tools import rag_search, knowledge_lookup  # noqa: F401
+from kairos.tools import builtin  # noqa: F401 — read_file, write_file, terminal, etc.
 from kairos.agents import factory  # noqa: F401
 
-# Providers
+# Logging
+from kairos.logging import get_logger, log_agent_event, log_tool_call, log_error
+
+# Plugin system
+from kairos.plugins import PluginManager, PluginManifest
+
+# Credential
 from kairos.providers.credential import CredentialPool, Credential, RetryConfig
 
 # Phase 2
@@ -40,6 +47,8 @@ from kairos.training import (
 __all__ = [
     "Agent", "StatefulAgent",
     "register_tool", "__version__",
+    "get_logger", "log_agent_event", "log_tool_call", "log_error",
+    "PluginManager", "PluginManifest",
     "CredentialPool", "Credential", "RetryConfig",
     "MemoryStore", "MemoryMiddleware",
     "SkillManager", "SkillStatus", "SkillEntry",
