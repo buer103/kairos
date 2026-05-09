@@ -1,4 +1,9 @@
-"""Gateway package — multi-platform messaging and HTTP transport."""
+"""Gateway package — multi-platform messaging and HTTP transport.
+
+11 platform adapters:
+    CLI, Telegram, WeChat, Slack, Discord, Feishu, WhatsApp,
+    Signal, Line, Matrix, IRC
+"""
 
 from kairos.gateway.protocol import (
     UnifiedMessage,
@@ -9,12 +14,19 @@ from kairos.gateway.protocol import (
     ConnectionState,
 )
 from kairos.gateway.server import GatewayServer
-from kairos.gateway.adapters.base import (
+from kairos.gateway.adapters import (
     PlatformAdapter,
     CLIAdapter,
     TelegramAdapter,
     WeChatAdapter,
     SlackAdapter,
+    DiscordAdapter,
+    FeishuAdapter,
+    WhatsAppAdapter,
+    SignalAdapter,
+    LineAdapter,
+    MatrixAdapter,
+    IRCAdapter,
 )
 
 __all__ = [
@@ -30,4 +42,11 @@ __all__ = [
     "TelegramAdapter",
     "WeChatAdapter",
     "SlackAdapter",
+    "DiscordAdapter",
+    "FeishuAdapter",
+    "WhatsAppAdapter",
+    "SignalAdapter",
+    "LineAdapter",
+    "MatrixAdapter",
+    "IRCAdapter",
 ]

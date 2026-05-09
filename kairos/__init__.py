@@ -3,7 +3,7 @@ Kairos — The right tool, at the right moment.
 An AI agent framework inheriting from Hermes and DeerFlow.
 """
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 from kairos.core.loop import Agent
 from kairos.core.stateful_agent import StatefulAgent
@@ -37,6 +37,8 @@ from kairos.gateway import (
     UnifiedMessage, UnifiedResponse, ContentBlock, ContentType, MessageRole,
     ConnectionState, GatewayServer,
     PlatformAdapter, CLIAdapter, TelegramAdapter, WeChatAdapter, SlackAdapter,
+    DiscordAdapter, FeishuAdapter, WhatsAppAdapter, SignalAdapter,
+    LineAdapter, MatrixAdapter, IRCAdapter,
 )
 from kairos.training import (
     TrajectoryRecorder, ToolContext,
@@ -67,6 +69,8 @@ __all__ = [
     "UnifiedMessage", "UnifiedResponse", "ContentBlock", "ContentType", "MessageRole",
     "ConnectionState", "GatewayServer",
     "PlatformAdapter", "CLIAdapter", "TelegramAdapter", "WeChatAdapter", "SlackAdapter",
+    "DiscordAdapter", "FeishuAdapter", "WhatsAppAdapter", "SignalAdapter",
+    "LineAdapter", "MatrixAdapter", "IRCAdapter",
     "TrajectoryRecorder", "ToolContext",
     "TrainingEnv", "EnvironmentRegistry", "RolloutRunner",
     "reward_confidence", "reward_success_rate", "reward_evidence_quality", "reward_file_creation",

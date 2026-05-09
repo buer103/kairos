@@ -274,7 +274,7 @@ class TestConfidenceScorer:
 
 
 def test_context_compressor():
-    compressor = ContextCompressor(max_tokens=100, threshold=0.3, keep_recent=3)
+    compressor = ContextCompressor(max_tokens=200, budget_ratio=0.5, keep_recent=2)
     state = ThreadState()
     state.messages = [
         {"role": "system", "content": "You are helpful."},
@@ -287,7 +287,7 @@ def test_context_compressor():
     ]
     runtime = {}
     result = compressor.before_model(state, runtime)
-    # Should have compressed
+    # With budget_ratio=0.5, max=200, budget=~100-1024=negative, so it should compress
     assert result is not None
     assert result["compressed_after"] < result["compressed_before"]
 
@@ -1293,3 +1293,208 @@ class TestDelegation:
         register_delegate_tool(mgr)
         tools = get_all_tools()  # returns dict[str, dict]
         assert "delegate_task" in tools
+
+
+# ═══════════════════════════════════════════════════════════════
+# Phase 7 — Context Compression v2 + Gateway adapters v2
+# ═══════════════════════════════════════════════════════════════
+
+class TestContextCompressorV2:
+    def test_passthrough_when_under_budget(self):
+        from kairos.middleware.compress import ContextCompressor
+        from kairos.core.state import ThreadState
+        compressor = ContextCompressor(max_tokens=100000, budget_ratio=0.85)
+        state = ThreadState()
+        state.messages = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+        result = compressor.before_model(state, {})
+        assert result is None  # Passthrough
+
+    def test_tool_output_truncation(self):
+        from kairos.middleware.compress import ContextCompressor
+        from kairos.core.state import ThreadState
+        compressor = ContextCompressor(
+            max_tokens=1000, budget_ratio=0.5,
+            tool_truncate=50, keep_recent=2,
+        )
+        state = ThreadState()
+        state.messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "test " * 50},
+            {"role": "assistant", "content": "ok", "tool_calls": [
+                {"id": "1", "function": {"name": "read", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "content": "x" * 500},  # Long tool output
+            {"role": "assistant", "content": "done"},
+        ]
+        result = compressor.before_model(state, {})
+        assert result is not None
+        assert result["compressed_after"] < result["compressed_before"]
+
+    def test_layered_summary(self):
+        from kairos.middleware.compress import ContextCompressor
+        from kairos.core.state import ThreadState
+        compressor = ContextCompressor(
+            max_tokens=2000, budget_ratio=0.5, keep_recent=2,
+            importance_scoring=True,
+        )
+        state = ThreadState()
+        # Large messages to trigger compression
+        big = "x" * 300
+        state.messages = [
+            {"role": "system", "content": "helpful"},
+            {"role": "user", "content": big},
+            {"role": "assistant", "content": big},
+            {"role": "user", "content": big},
+            {"role": "assistant", "content": big},
+            {"role": "user", "content": big},
+            {"role": "assistant", "content": big},
+            {"role": "user", "content": "keep this question?"},
+            {"role": "assistant", "content": "final answer"},
+        ]
+        result = compressor.before_model(state, {})
+        assert result is not None
+        # The last 2 messages should still be there
+        assert any("keep this question" in str(m.get("content", "")) for m in state.messages)
+
+    def test_tool_output_keeps_errors(self):
+        from kairos.middleware.compress import ContextCompressor
+        from kairos.core.state import ThreadState
+        compressor = ContextCompressor(
+            max_tokens=1000, budget_ratio=0.5, tool_truncate=100,
+        )
+        state = ThreadState()
+        content = (
+            "line1\nline2\nline3\n" + "data " * 50
+            + "\nERROR: permission denied\n"
+            + "last line 1\nlast line 2\nlast line 3"
+        )
+        state.messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "test " * 50},
+            {"role": "tool", "content": content},
+            {"role": "user", "content": "test " * 50},
+            {"role": "assistant", "content": "done"},
+        ]
+        result = compressor.before_model(state, {})
+        # The ERROR line should be preserved
+        tool_msgs = [m for m in state.messages if m.get("role") == "tool"]
+        if tool_msgs:
+            assert "ERROR" in tool_msgs[0]["content"]
+
+    def test_token_count(self):
+        from kairos.middleware.compress import count_tokens
+        assert count_tokens("hello world") > 0
+        assert count_tokens("你好世界") > 0
+        assert count_tokens("") == 0
+
+    def test_stats_tracking(self):
+        from kairos.middleware.compress import ContextCompressor
+        from kairos.core.state import ThreadState
+        compressor = ContextCompressor(
+            max_tokens=200, budget_ratio=0.5, keep_recent=2,
+            track_compression=True,
+        )
+        state = ThreadState()
+        state.messages = [
+            {"role": "user", "content": "x" * 100},
+            {"role": "assistant", "content": "y" * 100},
+            {"role": "user", "content": "z" * 100},
+            {"role": "assistant", "content": "done"},
+        ]
+        compressor.before_model(state, {})
+        assert len(compressor.stats) >= 1
+        assert "ratio_pct" in compressor.stats[0]
+
+
+class TestGatewayAdaptersV2:
+    def test_discord_init(self):
+        from kairos.gateway.adapters import DiscordAdapter
+        a = DiscordAdapter(bot_token="test")
+        assert a.platform_name == "discord"
+
+    def test_feishu_init(self):
+        from kairos.gateway.adapters import FeishuAdapter
+        a = FeishuAdapter(app_id="test", app_secret="secret")
+        assert a.platform_name == "feishu"
+
+    def test_whatsapp_init(self):
+        from kairos.gateway.adapters import WhatsAppAdapter
+        a = WhatsAppAdapter(phone_number_id="123", access_token="tok")
+        assert a.platform_name == "whatsapp"
+
+    def test_signal_init(self):
+        from kairos.gateway.adapters import SignalAdapter
+        a = SignalAdapter(sender_number="+1234567890")
+        assert a.platform_name == "signal"
+
+    def test_line_init(self):
+        from kairos.gateway.adapters import LineAdapter
+        a = LineAdapter(channel_access_token="tok")
+        assert a.platform_name == "line"
+
+    def test_matrix_init(self):
+        from kairos.gateway.adapters import MatrixAdapter
+        a = MatrixAdapter(homeserver="https://matrix.org", access_token="tok")
+        assert a.platform_name == "matrix"
+
+    def test_irc_init(self):
+        from kairos.gateway.adapters import IRCAdapter
+        a = IRCAdapter(server="irc.example.com", nickname="kairos-test")
+        assert a.platform_name == "irc"
+
+    def test_discord_translate(self):
+        from kairos.gateway.adapters import DiscordAdapter
+        a = DiscordAdapter()
+        # Discord interaction payload format
+        msg = a.translate_incoming({
+            "id": "msg1",
+            "type": 0,  # Not PING
+            "channel_id": "C123",
+            "guild_id": "G456",
+            "author": {"id": "U789", "username": "buer"},
+            "data": {"content": "hello kairos"},
+        })
+        assert msg.platform == "discord"
+        assert "hello kairos" in msg.content[0].text
+        assert msg.chat_id == "C123"
+
+    def test_whatsapp_translate(self):
+        from kairos.gateway.adapters import WhatsAppAdapter
+        a = WhatsAppAdapter()
+        msg = a.translate_incoming({
+            "entry": [{
+                "changes": [{
+                    "value": {
+                        "messages": [{
+                            "id": "w1",
+                            "from": "551199999999",
+                            "type": "text",
+                            "text": {"body": "hi from wa"},
+                        }],
+                        "contacts": [{"profile": {"name": "Test"}}],
+                    }
+                }]
+            }]
+        })
+        assert msg.platform == "whatsapp"
+        assert "hi from wa" in msg.content[0].text
+        assert msg.chat_id == "551199999999"
+
+    def test_line_translate(self):
+        from kairos.gateway.adapters import LineAdapter
+        a = LineAdapter()
+        msg = a.translate_incoming({
+            "events": [{
+                "type": "message",
+                "message": {"type": "text", "text": "hello line"},
+                "source": {"userId": "U123"},
+                "replyToken": "rtok",
+                "webhookEventId": "evt1",
+            }]
+        })
+        assert msg.platform == "line"
+        assert "hello line" in msg.content[0].text
+        assert msg.chat_id == "U123"
