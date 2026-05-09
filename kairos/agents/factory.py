@@ -1,19 +1,33 @@
-"""Sub-Agent factory — create and execute typed sub-agents."""
+"""Sub-Agent factory — create and execute typed sub-agents.
+
+Provides:
+  - register_subagent_types() — register custom sub-agent types
+  - get_subagent_type() — lookup by name
+  - task() — the tool that Agent calls to delegate work
+  - SubAgentExecutor — programmatic execution
+"""
 
 from __future__ import annotations
 
-import concurrent.futures
-import uuid
 from typing import Any
 
+from kairos.agents.executor import SubAgentExecutor
 from kairos.agents.types import BUILTIN_TYPES, SubAgentType
-from kairos.core.loop import Agent
-from kairos.core.state import Case
-from kairos.providers.base import ModelConfig, ModelProvider
-from kairos.tools.registry import execute_tool, get_tool_schemas, register_tool
+from kairos.tools.registry import register_tool
 
-# Thread pool for parallel sub-agent execution
-_executor = concurrent.futures.ThreadPoolExecutor(max_workers=3)
+# Module-level executor — set by Agent during initialization
+_executor: SubAgentExecutor | None = None
+
+
+def set_executor(executor: SubAgentExecutor) -> None:
+    """Set the global sub-agent executor (called by Agent.__init__)."""
+    global _executor
+    _executor = executor
+
+
+def get_executor() -> SubAgentExecutor | None:
+    """Get the current sub-agent executor."""
+    return _executor
 
 
 def register_subagent_types(types: dict[str, SubAgentType]) -> None:
@@ -26,45 +40,9 @@ def get_subagent_type(name: str) -> SubAgentType | None:
     return BUILTIN_TYPES.get(name)
 
 
-def _run_subagent(
-    task_prompt: str,
-    sub_type: SubAgentType,
-    model: ModelProvider,
-    parent_case: Case | None = None,
-) -> dict[str, Any]:
-    """Execute a single sub-agent and return its result."""
-    # Build a minimal agent for this task
-    agent = Agent(
-        model=ModelConfig(
-            api_key=model.config.api_key,
-            base_url=model.config.base_url,
-            model=model.config.model,
-        ),
-        middlewares=[],
-        agent_name=f"SubAgent({sub_type.name})",
-        role_description=sub_type.system_prompt or f"Sub-agent of type: {sub_type.name}",
-        max_iterations=sub_type.max_turns,
-    )
-
-    # Sub-agent gets its own case, linked to parent
-    sub_case = Case(id=f"sub_{uuid.uuid4().hex[:6]}")
-    sub_case.conclusion = None
-
-    result = agent.run(task_prompt)
-
-    # Merge sub-agent evidence into parent case
-    if parent_case:
-        for step in sub_case.steps:
-            parent_case.steps.append(step)
-        if sub_case.conclusion:
-            parent_case.conclusion = sub_case.conclusion
-
-    return result
-
-
 @register_tool(
     name="task",
-    description="Delegate a task to a typed sub-agent for parallel or isolated execution.",
+    description="Delegate a task to a typed sub-agent for parallel or isolated execution. Sub-agents have their own context and tool access.",
     parameters={
         "description": {"type": "string", "description": "3-5 word summary of the task"},
         "prompt": {"type": "string", "description": "Detailed task description for the sub-agent"},
@@ -84,24 +62,44 @@ def task(
     subagent_type: str = "general-purpose",
     max_turns: int | None = None,
 ) -> dict[str, Any]:
-    """
-    Delegate a task to a sub-agent.
+    """Delegate a task to a sub-agent."""
+    if _executor is None:
+        return {
+            "error": "Sub-agent executor not initialized. The Agent must be created with sub-agent support.",
+            "subagent_type": subagent_type,
+            "description": description,
+        }
 
-    Currently runs synchronously. Parallel batch execution coming in Phase 2.
-    """
-    sub_type = get_subagent_type(subagent_type)
+    sub_type = BUILTIN_TYPES.get(subagent_type)
     if not sub_type:
-        return {"error": f"Unknown sub-agent type: {subagent_type}. Available: {list(BUILTIN_TYPES.keys())}"}
+        return {
+            "error": f"Unknown sub-agent type: {subagent_type}. Available: {list(BUILTIN_TYPES.keys())}",
+            "subagent_type": subagent_type,
+        }
 
-    if max_turns:
-        sub_type.max_turns = max_turns
+    # Apply max_turns override
+    if max_turns is not None:
+        sub_type = SubAgentType(
+            name=sub_type.name,
+            description=sub_type.description,
+            tools=sub_type.tools,
+            disallowed_tools=sub_type.disallowed_tools,
+            max_turns=max_turns,
+            timeout_seconds=sub_type.timeout_seconds,
+            model=sub_type.model,
+            system_prompt=sub_type.system_prompt,
+        )
 
-    # Run sub-agent (model is resolved from current agent context in real usage)
-    # For now, stub the execution
+    result = _executor.run_sync(prompt, sub_type)
+
+    if result.status == "error":
+        return {"error": result.error, "subagent_type": subagent_type}
+
     return {
         "subagent_type": subagent_type,
         "description": description,
-        "prompt": prompt,
-        "status": "stub — sub-agent execution requires parent agent context",
-        "result": None,
+        "status": result.status,
+        "content": result.content,
+        "confidence": result.confidence,
+        "evidence": result.evidence,
     }

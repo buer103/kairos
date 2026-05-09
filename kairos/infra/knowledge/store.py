@@ -5,15 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Type
 
-from pydantic import BaseModel
-
-
-class KnowledgeSchema(BaseModel):
-    """Base class for all domain knowledge schemas."""
-
-    id: str
-    created_at: datetime = datetime.now()
-    updated_at: datetime = datetime.now()
+from kairos.infra.knowledge.schema import KnowledgeSchema
 
 
 class KnowledgeStore:
@@ -64,7 +56,7 @@ class KnowledgeStore:
         results = []
         text_lower = text.lower()
         for item in self._items.values():
-            item_str = str(item.model_dump()).lower()
+            item_str = str(item.to_dict()).lower()
             if text_lower in item_str:
                 results.append(item)
         return results
