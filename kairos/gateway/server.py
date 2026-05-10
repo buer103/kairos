@@ -79,6 +79,8 @@ class GatewayServer:
         self._app.router.add_post("/chat", self._handle_chat)
         self._app.router.add_get("/chat/stream", self._handle_stream)
         self._app.router.add_get("/health", self._handle_health)
+        self._app.router.add_get("/ready", self._handle_ready)
+        self._app.router.add_get("/health/detailed", self._handle_health_detailed)
         self._app.router.add_get("/stats", self._handle_stats)
         self._app.router.add_post("/sessions/clear", self._handle_clear_sessions)
 
@@ -173,11 +175,85 @@ class GatewayServer:
         return resp
 
     async def _handle_health(self, request) -> Any:
+        """Liveness probe — is the process alive? Always returns 200 if the server is running."""
         from aiohttp import web
         return self._cors(web.json_response({
             "status": "ok",
-            "uptime": round(time.time() - self._started_at, 1),
+            "uptime_seconds": round(time.time() - self._started_at, 1),
             "sessions": len(self._sessions),
+        }))
+
+    async def _handle_ready(self, request) -> Any:
+        """Readiness probe — can the agent serve requests? Checks model availability."""
+        from aiohttp import web
+
+        checks: dict[str, bool] = {
+            "agent_loaded": self.agent is not None,
+        }
+
+        # Check model provider is configured
+        try:
+            provider = getattr(self.agent, "_primary_provider", None)
+            if provider and hasattr(provider, "config"):
+                checks["model_configured"] = bool(provider.config.api_key)
+            else:
+                checks["model_configured"] = False
+        except Exception:
+            checks["model_configured"] = False
+
+        # Check credential pool
+        try:
+            pool = getattr(self.agent, "_credential_pool", None)
+            if pool:
+                stats = pool.stats()
+                checks["credential_pool"] = stats.get("default", {}).get("available_keys", 0) > 0
+            else:
+                checks["credential_pool"] = True  # No pool = using single key, assume OK
+        except Exception:
+            checks["credential_pool"] = False
+
+        ready = all(checks.values())
+        status = 200 if ready else 503
+
+        return self._cors(web.json_response({
+            "status": "ready" if ready else "not_ready",
+            "checks": checks,
+            "uptime_seconds": round(time.time() - self._started_at, 1),
+        }, status=status))
+
+    async def _handle_health_detailed(self, request) -> Any:
+        """Detailed health check — component-level status for monitoring systems."""
+        from aiohttp import web
+
+        components: dict[str, dict[str, Any]] = {}
+
+        # Agent status
+        try:
+            health = self.agent.health_status() if hasattr(self.agent, "health_status") else {}
+            components["agent"] = {
+                "status": "healthy" if health.get("healthy", True) else "degraded",
+                **health,
+            }
+        except Exception as e:
+            components["agent"] = {"status": "error", "error": str(e)}
+
+        # Gateway status
+        components["gateway"] = {
+            "status": "healthy",
+            "uptime_seconds": round(time.time() - self._started_at, 1),
+            "requests": self._request_count,
+            "errors": self._error_count,
+            "sessions": len(self._sessions),
+            "error_rate": round(self._error_count / max(self._request_count, 1), 3),
+        }
+
+        overall = all(
+            c.get("status") in ("healthy", "ok") for c in components.values()
+        )
+
+        return self._cors(web.json_response({
+            "status": "healthy" if overall else "degraded",
+            "components": components,
         }))
 
     async def _handle_stats(self, request) -> Any:
