@@ -118,6 +118,14 @@ class ContextCompressor(Middleware):
         self._stats: list[dict] = []
         self._hooks: list[BeforeCompressionHook] = []
 
+        # ── Skill rescue config ────────────────────────────────
+        self._skill_tool_names: set[str] = {
+            "skill_view",
+            "skills_list",
+        }
+        self._skill_dir_pattern: str = "/skills/"   # Path marker for skill file reads
+        self._max_rescued_bundles: int = 5          # Max skill bundles to preserve
+
         # ── New: trajectory compressor + importance scorer ──────
         self.use_trajectory_compressor = use_trajectory_compressor
         self.use_importance_scorer = use_importance_scorer
@@ -190,6 +198,75 @@ class ContextCompressor(Middleware):
         }
 
     # ═══════════════════════════════════════════════════════════
+    # Skill Rescue (DeerFlow-compatible)
+    # ═══════════════════════════════════════════════════════════
+
+    def _rescue_skill_bundles(
+        self,
+        middle: list[dict],
+    ) -> tuple[list[list[dict]], list[dict]]:
+        """Identify and extract skill-related message bundles from middle section.
+
+        A skill bundle is: AIMessage with skill_view/skills_list tool_call +
+        the resulting ToolMessage. These must be preserved so the Agent
+        doesn't lose skill context after compression.
+
+        Returns:
+            (rescued_bundles, remaining_messages) —
+            rescued_bundles are guaranteed-safe blocks,
+            remaining_messages are everything else.
+        """
+        rescued: list[list[dict]] = []
+        rescued_tool_ids: set[str] = set()
+
+        if not middle:
+            return rescued, list(middle)
+
+        # Pass 1: find AI messages calling skill tools
+        skill_call_indices: list[int] = []
+        for i, m in enumerate(middle):
+            if m.get("role") != "assistant":
+                continue
+            tool_calls = m.get("tool_calls", [])
+            for tc in tool_calls:
+                fn_name = tc.get("function", {}).get("name", "")
+                if fn_name in self._skill_tool_names:
+                    skill_call_indices.append(i)
+                    rescued_tool_ids.add(tc.get("id", ""))
+                    break
+
+        if not skill_call_indices:
+            return rescued, list(middle)
+
+        # Pass 2: extract skill bundles (AI call + tool response)
+        remaining: list[dict] = []
+        i = 0
+        while i < len(middle):
+            if i in skill_call_indices and len(rescued) < self._max_rescued_bundles:
+                bundle = [middle[i]]
+                i += 1
+                # Collect following tool messages with rescued tool_call_ids
+                while i < len(middle) and middle[i].get("role") == "tool":
+                    tid = middle[i].get("tool_call_id", "")
+                    if tid in rescued_tool_ids:
+                        bundle.append(middle[i])
+                        i += 1
+                    else:
+                        break
+                rescued.append(bundle)
+            else:
+                remaining.append(middle[i])
+                i += 1
+
+        if rescued:
+            logger.debug(
+                "Skill rescue: preserved %d bundles (%d messages rescued from compression)",
+                len(rescued), sum(len(b) for b in rescued),
+            )
+
+        return rescued, remaining
+
+    # ═══════════════════════════════════════════════════════════
     # Core compression
     # ═══════════════════════════════════════════════════════════
 
@@ -210,6 +287,9 @@ class ContextCompressor(Middleware):
 
         if not middle:
             return {"tier": "passthrough", "blocks_kept": 0, "blocks_summarized": 0}
+
+        # Skill Rescue: protect skill bundles before compression
+        rescued_bundles, middle = self._rescue_skill_bundles(middle)
 
         # Split into conversation blocks
         blocks = self._split_into_blocks(middle)
@@ -237,6 +317,14 @@ class ContextCompressor(Middleware):
         kept_blocks: list[list[dict]] = []
         summarized_blocks: list[list[dict]] = []
         used = 0
+
+        # Skill Rescue: guaranteed-keep bundles (deduct from budget)
+        for bundle in rescued_bundles:
+            bundle_tokens = self._count_messages(bundle)
+            kept_blocks.append(bundle)
+            used += bundle_tokens
+            available = max(0, available - bundle_tokens)
+        rescued_count = len(rescued_bundles)
 
         for score, _idx, block in scored:
             block_tokens = self._count_messages(block)
@@ -273,6 +361,7 @@ class ContextCompressor(Middleware):
             "tier": tier,
             "blocks_kept": len(kept_blocks),
             "blocks_summarized": len(summarized_blocks),
+            "rescued_bundles": rescued_count,
         }
 
     # ═══════════════════════════════════════════════════════════
@@ -509,6 +598,14 @@ class ContextCompressor(Middleware):
                 score += 0.1
             if role == "user":
                 score += 0.05  # Slight preference for keeping user messages
+
+            # Skill rescue: max importance for skill tool calls
+            if m.get("tool_calls"):
+                for tc in m["tool_calls"]:
+                    fn = tc.get("function", {}).get("name", "")
+                    if fn in self._skill_tool_names:
+                        score = 1.0  # Never compress skill bundles
+                        break
 
         return min(score, 1.0)
 

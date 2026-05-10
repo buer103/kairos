@@ -122,6 +122,36 @@ def tool_stats() -> dict[str, Any]:
 
 # ── Management ──────────────────────────────────────────────────
 
+def register_plugin_tool(
+    name: str,
+    handler: Callable,
+    schema: dict[str, Any],
+    category: str = "plugin",
+    timeout: float = DEFAULT_TIMEOUT,
+) -> bool:
+    """Register a tool programmatically (for plugins).
+
+    Unlike the @register_tool decorator, this accepts an already-defined
+    handler and schema. Returns True if registered, False if name exists.
+    """
+    if name in _registry:
+        return False
+    with _lock:
+        if name in _registry:  # double-check
+            return False
+        _registry[name] = {
+            "fn": handler,
+            "timeout": timeout,
+            "category": category,
+            "enabled": True,
+            "call_count": 0,
+            "error_count": 0,
+            "total_duration_ms": 0.0,
+            "schema": schema,
+        }
+    return True
+
+
 def enable_tool(name: str) -> bool:
     t = _registry.get(name)
     if t:
