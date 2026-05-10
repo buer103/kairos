@@ -5,7 +5,7 @@
 
 ---
 
-**Kairos** is an AI agent framework that inherits from
+**Kairos** is an AI agent framework that fuses the best of
 [Hermes](https://github.com/NousResearch/hermes-agent) and
 [DeerFlow](https://github.com/bytedance/deer-flow),
 adding original capabilities neither provides.
@@ -17,9 +17,9 @@ the instant when an archer releases the bowstring.
 
 | From | What |
 |------|------|
-| **Hermes** | Agent Loop, Tool Registry, Skills+Curator, Memory, Session Search, Gateway (11 platforms), Cron, Delegation, RL Training, Model Providers |
-| **DeerFlow** | Middleware Pipeline (16 layers), Sub-Agent Factory, Sandbox, Typed ThreadState, Context Compression |
-| **Kairos (new)** | RAG Engine, Structured Knowledge, Evidence Chain, Confidence+Citation, Plugin System, Credential Pool, Rich TUI |
+| **Hermes** | Agent Loop, Tool Registry, Skills+Curator, Session Search, Gateway (11 platforms), Cron, Delegation, RL Training, Model Providers |
+| **DeerFlow** | Middleware Pipeline (18 layers), Sub-Agent Factory, Sandbox, Typed ThreadState, Context Compression (3 tiers) |
+| **Kairos (new)** | RAG Engine, Structured Knowledge, Evidence Chain, Confidence+Citation, Credential Pool, Rich TUI, Plugin System, Trace ID, Tiered Memory, Provider Registry |
 
 ## 🏗️ Architecture
 
@@ -28,21 +28,25 @@ User Message → Gateway (11 platforms)
     │
     ▼
 ┌──────────────────────────────────────────────────────┐
-│              Middleware Pipeline (16 layers)          │
+│              Middleware Pipeline (18 layers)          │
 │  ThreadData → Uploads → Dangling → SkillLoader       │
 │  → Compress → Todo → Memory → ViewImage              │
 │  → Evidence → ToolArgRepair → Confidence             │
-│  → LLMRetry → SubagentLimit → Title → Clarify        │
+│  → LLMRetry → Logging → SubagentLimit → Title        │
+│  → MemoryMiddleware → Clarify                        │
+│  + SecurityMiddleware (optional)                     │
 ├──────────────────────────────────────────────────────┤
 │              Agent Loop (ReAct + Stateful)            │
 │         think → tool_call → observe → repeat          │
 ├──────────────┬───────────────────────────────────────┤
 │  Tool Registry│     Infrastructure                   │
 │  (auto-reg)  │  RAG · Knowledge · Evidence DB        │
-│  22 tools    │  Sandbox (local/docker/ssh)           │
+│  23 tools    │  Sandbox (local/docker/ssh)           │
+│              │  Tiered Memory (profile/timeline/facts)│
 ├──────────────┴───────────────────────────────────────┤
-│  Model Providers · Memory · Skills · Cron            │
-│  Session Search · Delegation · RL Training           │
+│  Model Providers (7 profiles) · Memory · Skills      │
+│  Cron · Session Search · Delegation · RL Training    │
+│  Trace ID · Observability · Security · Plugins       │
 └──────────────────────────────────────────────────────┘
 ```
 
@@ -57,78 +61,95 @@ kairos config init
 # Set your API key (or add to ~/.config/kairos/config.yaml)
 export DEEPSEEK_API_KEY=sk-...
 
-# Interactive chat
+# Interactive chat (10+ skins, tab completion, slash commands)
 kairos chat
 
 # Single query
 kairos run "Explain the Kubernetes scheduler in 3 bullet points"
 
-# List available tools
-kairos chat  →  /tools
-
-# Manage cron jobs
-kairos cron list
-kairos cron add "daily-report" "0 9 * * *"
+# List available providers
+kairos config providers
 ```
 
 ```python
 from kairos import Agent
 from kairos.providers.base import ModelConfig
+from kairos.providers.registry import ProviderRegistry
 
-# Minimal — just an API key
+# Quick: any OpenAI-compatible API
 agent = Agent(model=ModelConfig(api_key="sk-..."))
 result = agent.run("What is 2+2?")
 print(result["content"])  # "4"
 
-# Full pipeline with custom tools and knowledge
+# Use a named provider profile
+registry = ProviderRegistry()
+config = registry.make_config("deepseek", api_key="sk-...")
+agent = Agent(model=config)
+
+# Full pipeline with tiered memory, RAG, skills, and streaming
 agent = Agent.build_default(
     model=ModelConfig(api_key="sk-..."),
     agent_name="DiagnosisBot",
     role_description="You diagnose system faults from logs.",
     rag_store=my_rag,
-    skills_dir="~/.kairos/skills",
+    enable_tiered_memory=True,
 )
 result = agent.run("Diagnose log-20260508.txt")
 print(result["content"])
 print(result["confidence"])  # 0.92
+print(result["trace_context"])  # TraceContext for full-chain observability
 ```
 
-## 📦 Modules
+## 📦 Modules (62)
 
 | Layer | Modules |
 |-------|---------|
-| **Core** | Agent Loop (ReAct + Stateful), 16-layer Middleware Pipeline, Typed ThreadState |
-| **Tools** | 22 built-in tools (file, terminal, web, rag, knowledge, cron, delegate) |
-| **Providers** | OpenAI-compatible + Credential Pool (multi-key rotation + retry) |
+| **Core** | Agent Loop (ReAct + Stateful), 18-layer Middleware Pipeline, Typed ThreadState, Trace ID |
+| **Tools** | 23 built-in tools (file, terminal, web, browser, MCP, vision, rag, knowledge, delegate) |
+| **Providers** | 7 profiles (DeepSeek, OpenRouter, Groq, Qwen, OpenAI, Anthropic, Gemini) + Credential Pool |
+| **Memory** | 3-tier memory (Profile/Timeline/Facts), confidence≥0.7 filter, per-agent isolation |
 | **Infra** | RAG Engine, Structured Knowledge, Evidence DB, Vector Store |
-| **Memory** | Persistent memory (SQLite), auto-injection middleware |
-| **Skills** | Curator lifecycle (install/update/remove), skill loader middleware |
-| **Gateway** | 11 platform adapters (CLI, Telegram, WeChat, Slack, Discord, Feishu, WhatsApp, Signal, Line, Matrix, IRC) |
+| **Skills** | Curator lifecycle (install/update/remove), semantic retrieval, marketplace |
+| **Gateway** | 11 platform adapters + signatures + readiness + pairing + rate limiting |
 | **Cron** | SQLite-backed scheduler (cron expression, repeat, pause/resume) |
-| **Delegation** | Sub-agent spawning (ThreadPoolExecutor, timeout, batch) |
+| **Delegation** | Sub-agent spawning (ThreadPoolExecutor, parallel batch, orchestrator) |
 | **Sandbox** | 3 execution backends (local/Docker/SSH), sandbox middleware |
-| **Training** | Trajectory recorder (ShareGPT), RL environment + rewards |
-| **CLI** | Rich TUI (4 skins, 10+ slash commands, spinner, panels) |
-| **Config** | YAML/JSON config + env var fallback (`kairos config init`) |
-| **Plugins** | Plugin manifest + Manager (load/unload/reload) |
+| **Security** | 6-layer security (file safety, URL safety, path security, content redaction, guardrails) |
+| **Observability** | Error classifier, usage tracker, agent insights, health endpoints |
+| **Training** | Trajectory recorder (ShareGPT JSONL), RL environment + 4 reward functions |
+| **CLI** | Rich TUI (10 skins, tab completion, slash commands, setup wizard) |
+| **Config** | Pydantic schema validation, YAML/JSON config + env var fallback |
+| **Plugins** | Plugin manifest + Manager (load/unload/reload), 3 built-in plugins |
+| **Deploy** | Docker multi-stage build + docker-compose + HEALTHCHECK |
+| **Gateway** | Graceful shutdown, session drain, webhook signature verification (6 platforms) |
 
 ## ✅ Status
 
-**Alpha — 566 tests passing.**
+**Alpha — 695 tests passing. 44 commits. v0.15.0-dev.**
 
-- [x] Architecture design + module comparison matrix
+- [x] Architecture design + 4-framework comparison matrix
 - [x] Phase 1: Agent Loop, Prompt Engine, RAG, Knowledge, Evidence, Middleware
 - [x] Phase 2: Memory, Skills, Session Search, Sandbox
 - [x] Phase 3: Gateway (4 platforms), Training (RL recorder + env)
-- [x] Phase 4: Middleware parity with DeerFlow (5 → 16 layers)
+- [x] Phase 4: Middleware parity with DeerFlow (5 → 18 layers)
 - [x] Phase 5: LLM error handling, credential pool, SSE streaming, interrupt/resume
 - [x] Phase 6: Cron scheduler, Rich TUI, Sandbox wiring, Sub-agent delegation
 - [x] Phase 7: Gateway expansion (7 → 11 platforms), layered context compression
-- [x] Phase 8: Config system, pyproject.toml, CLI polish, README
-- [x] Phase 9: Full test coverage — 7 new test files, 299→566 tests (+89%), 21 modules covered
+- [x] Phase 8: Config system, pyproject.toml, CLI polish
+- [x] Phase 9: Full test coverage (299→566 tests)
+- [x] Phase 10: Security layer + Observability + Sub-agent Orchestrator
+- [x] Phase 11: Browser/MCP/Vision tools + Tiered Memory + Streaming v2
+- [x] Phase 12: Docker deployment + Graceful shutdown + Webhook signatures
+- [x] Phase 13: Trace ID full-chain + Memory 3-tier + Provider Registry (566→695)
+
+### Next up
+
+- [ ] Phase 14: Batch runner, Interactive permissions, ACP IDE integration
+- [ ] Phase 15: Documentation site, tutorials, CI/CD pipeline
+- [ ] Phase 16: v1.0 release
 
 ---
 
 <p align="center">
-  <sub>Built by <a href="https://github.com/buer103">buer103</a> · 36 commits · 566 tests</sub>
+  <sub>Built by <a href="https://github.com/buer103">buer103</a> · 44 commits · 695 tests · v0.15.0-dev</sub>
 </p>
