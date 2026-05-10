@@ -115,12 +115,29 @@ class WebhookServer:
         self._app.router.add_get("/webhook/health", self._handle_health)
         self._app.router.add_get("/webhook/stats", self._handle_stats)
 
+        # Graceful shutdown
+        self._app.on_shutdown.append(self._on_shutdown)
+
         self._started_at = time.time()
         self._runner = web.AppRunner(self._app)
         await self._runner.setup()
         site = web.TCPSite(self._runner, host, port)
         await site.start()
         logger.info("Webhook server listening on http://%s:%d", host, port)
+
+    async def _on_shutdown(self, app) -> None:
+        """Graceful shutdown: drain queue, log stats."""
+        logger.info(
+            "Webhook server shutting down — %d requests, %d errors, %d queued",
+            self._request_count, self._error_count, self._queue.qsize(),
+        )
+        # Drain remaining queue items (mark as done to unblock process_queue)
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+                self._queue.task_done()
+            except asyncio.QueueEmpty:
+                break
 
     async def stop(self) -> None:
         """Stop the webhook server."""

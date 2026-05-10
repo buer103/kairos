@@ -84,11 +84,23 @@ class GatewayServer:
         self._app.router.add_get("/stats", self._handle_stats)
         self._app.router.add_post("/sessions/clear", self._handle_clear_sessions)
 
+        # Graceful shutdown handlers
+        self._app.on_shutdown.append(self._on_shutdown)
+
         self._runner = web.AppRunner(self._app)
         await self._runner.setup()
         site = web.TCPSite(self._runner, host, port)
         await site.start()
         logger.info("Kairos Gateway listening on http://%s:%d", host, port)
+
+    async def _on_shutdown(self, app) -> None:
+        """Graceful shutdown: drain pending sessions, log stats."""
+        logger.info(
+            "Gateway shutting down — processed %d requests, %d errors, %d active sessions",
+            self._request_count, self._error_count, len(self._sessions),
+        )
+        # Clean up sessions
+        self.clear_sessions()
 
     async def stop(self) -> None:
         if self._runner:

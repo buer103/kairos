@@ -1,0 +1,46 @@
+version: "3.8"
+
+services:
+  kairos:
+    build: .
+    container_name: kairos-agent
+    restart: unless-stopped
+    ports:
+      - "8080:8080"   # Gateway API + Webhook
+      - "8000:8000"   # Optional CLI
+    environment:
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - KAIROS_CONFIG=/home/kairos/.config/kairos/config.yaml
+      - KAIROS_LOG_LEVEL=${KAIROS_LOG_LEVEL:-INFO}
+    volumes:
+      # Persistent data
+      - kairos_data:/home/kairos/.kairos
+      # Custom config
+      - ./config.yaml:/home/kairos/.config/kairos/config.yaml:ro
+      # Custom skills
+      - ./skills:/home/kairos/.kairos/skills:ro
+    networks:
+      - kairos-net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # Optional: Redis for session persistence (future)
+  # redis:
+  #   image: redis:7-alpine
+  #   restart: unless-stopped
+  #   volumes:
+  #     - redis_data:/data
+
+networks:
+  kairos-net:
+    driver: bridge
+
+volumes:
+  kairos_data:
+  # redis_data:
