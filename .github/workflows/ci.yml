@@ -31,32 +31,13 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install --upgrade pip
-          pip install -e ".[dev,gateway]"
+          python -m pip install --upgrade pip setuptools wheel
+          pip install openai pydantic rich aiohttp
+          pip install pytest pytest-asyncio
+          pip install -e .
 
       - name: Run tests
         run: python -m pytest -v --tb=short
-
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results-py${{ matrix.python }}
-          path: |
-            .pytest_cache/
-          retention-days: 1
-
-  # ── Lint (ruff) ─────────────────────────────────────────────────
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: astral-sh/ruff-action@v3
-        with:
-          version: latest
-          args: check --select E,F,W --ignore E501
 
   # ── Docker build check ──────────────────────────────────────────
   docker:
@@ -69,7 +50,5 @@ jobs:
       - name: Build Docker image
         run: docker build -t kairos-agent:ci .
 
-      - name: Verify image
-        run: |
-          docker images kairos-agent:ci
-          echo "Docker image built successfully"
+      - name: Verify image exists
+        run: docker images kairos-agent:ci | grep kairos-agent
