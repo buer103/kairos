@@ -61,7 +61,9 @@ class MiddlewarePipeline:
                         setattr(state, k, v)
 
     def after_agent(self, state, runtime):
-        for mw in self._layers:
+        # Reverse order: N→0. Last-added middleware cleans up first.
+        # e.g. Memory (pos 12) saves before Sandbox (pos 3) releases.
+        for mw in reversed(self._layers):
             mw.after_agent(state, runtime)
 
     def before_model(self, state, runtime):
@@ -69,17 +71,29 @@ class MiddlewarePipeline:
             mw.before_model(state, runtime)
 
     def after_model(self, state, runtime):
-        for mw in self._layers:
+        # Reverse order: N→0. Clarification (last) processes first.
+        for mw in reversed(self._layers):
             mw.after_model(state, runtime)
 
     def wrap_model_call(self, messages, handler, **kwargs):
+        chain = handler
         for mw in self._layers:
-            prev = handler
-            handler = lambda msgs, **kw: mw.wrap_model_call(msgs, prev, **kw)
-        return handler(messages, **kwargs)
+            # Capture mw and chain in closure to avoid late-binding bug
+            next_handler = chain
+
+            def _wrapped(msgs, _mw=mw, _next=next_handler, **kw):
+                return _mw.wrap_model_call(msgs, _next, **kw)
+
+            chain = _wrapped
+        return chain(messages, **kwargs)
 
     def wrap_tool_call(self, tool_name, args, handler, **kwargs):
+        chain = handler
         for mw in reversed(self._layers):
-            prev = handler
-            handler = lambda n, a, **kw: mw.wrap_tool_call(n, a, prev, **kw)
-        return handler(tool_name, args, **kwargs)
+            next_handler = chain
+
+            def _wrapped(name, a, _mw=mw, _next=next_handler, **kw):
+                return _mw.wrap_tool_call(name, a, _next, **kw)
+
+            chain = _wrapped
+        return chain(tool_name, args, **kwargs)

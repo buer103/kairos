@@ -19,8 +19,16 @@ from kairos.gateway.protocol import (
     ConnectionState,
 )
 from kairos.gateway.adapters.base import PlatformAdapter
+from kairos.gateway.auth import GatewayAuth
 
 logger = logging.getLogger("kairos.gateway.manager")
+
+# ── Reconnect config ──────────────────────────────────────────
+RECONNECT_BASE_DELAY = 10.0      # seconds — first retry
+RECONNECT_MAX_DELAY = 300.0      # seconds — max backoff (5 min)
+RECONNECT_BACKOFF_FACTOR = 2.0   # exponential factor
+RECONNECT_JITTER = 0.2           # ±20% jitter
+RECONNECT_CHECK_INTERVAL = 5.0   # seconds between watcher cycles
 
 
 @dataclass
@@ -66,6 +74,15 @@ class RouteResult:
     latency_ms: float = 0
 
 
+@dataclass
+class _ReconnectState:
+    """Tracks exponential backoff state for a reconnecting adapter."""
+    name: str
+    failures: int = 0
+    delay: float = 0.0
+    next_attempt: float = 0.0
+
+
 class GatewayManager:
     """Central manager for all platform adapters.
 
@@ -76,11 +93,17 @@ class GatewayManager:
       - Auto-reconnect for disconnected adapters
     """
 
-    def __init__(self):
+    def __init__(self, auth: GatewayAuth | None = None):
         self._adapters: dict[str, PlatformAdapter] = {}
         self._health: dict[str, AdapterHealth] = {}
         self._started_at = time.time()
         self._lock = asyncio.Lock()
+        self.auth = auth or GatewayAuth()
+
+        # Reconnect watcher state
+        self._reconnect_task: asyncio.Task | None = None
+        self._reconnect_tracker: dict[str, _ReconnectState] = {}
+        self._watcher_running = False
 
     # ── Registration ──────────────────────────────────────────────────────
 
@@ -117,7 +140,7 @@ class GatewayManager:
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
     async def connect_all(self) -> dict[str, bool]:
-        """Connect all registered adapters. Returns per-platform success status."""
+        """Connect all registered adapters. Starts background reconnect watcher."""
         results: dict[str, bool] = {}
         tasks = []
 
@@ -132,21 +155,30 @@ class GatewayManager:
                     self._health[name].state = adapter.state
                     if success:
                         self._health[name].connected_at = time.time()
+                        self._reconnect_tracker.pop(name, None)  # Clear retry state
+                else:
+                    self._record_reconnect_failure(name)
             except asyncio.TimeoutError:
                 results[name] = False
                 logger.warning("Adapter %s connection timed out", name)
+                self._record_reconnect_failure(name)
             except Exception as e:
                 results[name] = False
                 logger.error("Adapter %s connection error: %s", name, e)
+                self._record_reconnect_failure(name)
 
         connected = sum(1 for v in results.values() if v)
         logger.info(
             "Gateway connected %d/%d adapters", connected, len(results)
         )
+
+        # Start background reconnect watcher
+        self._start_watcher()
         return results
 
     async def disconnect_all(self) -> None:
-        """Disconnect all registered adapters."""
+        """Disconnect all registered adapters. Stops reconnect watcher."""
+        self._stop_watcher()
         for name, adapter in self._adapters.items():
             try:
                 await asyncio.wait_for(adapter.disconnect(), timeout=5)
@@ -154,7 +186,8 @@ class GatewayManager:
                 logger.warning("Adapter %s disconnect error: %s", name, e)
 
     async def shutdown(self) -> None:
-        """Graceful shutdown: disconnect all adapters."""
+        """Graceful shutdown: stop watcher, disconnect all adapters."""
+        self._stop_watcher()
         await self.disconnect_all()
 
     # ── Message routing ───────────────────────────────────────────────────
@@ -164,23 +197,40 @@ class GatewayManager:
         platform: str,
         chat_id: str,
         raw_message: dict[str, Any] | None = None,
+        user_id: str = "",
     ) -> RouteResult:
         """Route a message through the pipeline.
 
-        1. Get the adapter for the platform
-        2. Translate incoming → UnifiedMessage
-        3. (Agent processing happens externally)
-        4. Return the adapter and translated message
+        1. Auth check (whitelist/pairing/allow-all)
+        2. Get the adapter for the platform
+        3. Translate incoming → UnifiedMessage
+        4. (Agent processing happens externally)
 
         Args:
             platform: Platform name (e.g., "telegram", "discord")
             chat_id: Platform-specific chat/channel ID
             raw_message: Raw platform payload (dict for translate_incoming)
+            user_id: Optional user identifier for auth
 
         Returns:
             RouteResult with the adapter name and translated UnifiedMessage
         """
         t0 = time.time()
+
+        # ── Auth check ──────────────────────────────────
+        auth_result = self.auth.check(platform, chat_id=chat_id, user_id=user_id)
+        if not auth_result.allowed:
+            reason = auth_result.reason
+            pairing_code = auth_result.pairing_code
+            if pairing_code:
+                reason = f"pairing_required (code: {pairing_code})"
+            return RouteResult(
+                adapter_name=platform,
+                response=None,
+                error=f"Auth denied: {reason}",
+                latency_ms=(time.time() - t0) * 1000,
+            )
+
         adapter = self._adapters.get(platform)
 
         if not adapter:
@@ -313,21 +363,114 @@ class GatewayManager:
             "adapters": adapter_healths,
         }
 
-    def check_reconnects(self) -> dict[str, bool]:
-        """Check and reconnect any disconnected adapters. Returns reconnect results."""
-        results: dict[str, bool] = {}
-        for name, adapter in self._adapters.items():
-            if adapter.state != ConnectionState.CONNECTED:
+    # ── Reconnect watcher ──────────────────────────────────────────────────
+
+    def _record_reconnect_failure(self, name: str) -> None:
+        """Initialize or escalate reconnect backoff for a failed adapter."""
+        import random
+        if name not in self._reconnect_tracker:
+            tracker = _ReconnectState(
+                name=name,
+                failures=0,
+                delay=RECONNECT_BASE_DELAY,
+                next_attempt=0,
+            )
+            self._reconnect_tracker[name] = tracker
+        tracker = self._reconnect_tracker[name]
+        tracker.failures += 1
+        tracker.delay = min(
+            RECONNECT_BASE_DELAY * (RECONNECT_BACKOFF_FACTOR ** (tracker.failures - 1)),
+            RECONNECT_MAX_DELAY,
+        )
+        jitter = tracker.delay * RECONNECT_JITTER
+        tracker.delay = tracker.delay + random.uniform(-jitter, jitter)
+        tracker.next_attempt = time.time() + tracker.delay
+
+    def _start_watcher(self) -> None:
+        """Start the background reconnect watcher if not already running."""
+        if self._watcher_running:
+            return
+        self._watcher_running = True
+        self._reconnect_task = asyncio.ensure_future(self._reconnect_watcher())
+        logger.debug("Reconnect watcher started")
+
+    def _stop_watcher(self) -> None:
+        """Stop the background reconnect watcher."""
+        self._watcher_running = False
+        if self._reconnect_task and not self._reconnect_task.done():
+            self._reconnect_task.cancel()
+        self._reconnect_task = None
+        logger.debug("Reconnect watcher stopped")
+
+    async def _reconnect_watcher(self) -> None:
+        """Background coroutine: attempts to reconnect disconnected adapters
+        with exponential backoff."""
+        while self._watcher_running:
+            await asyncio.sleep(RECONNECT_CHECK_INTERVAL)
+            if not self._watcher_running:
+                break
+
+            now = time.time()
+            for name, tracker in list(self._reconnect_tracker.items()):
+                if now < tracker.next_attempt:
+                    continue  # Not time yet
+                adapter = self._adapters.get(name)
+                if not adapter:
+                    self._reconnect_tracker.pop(name, None)
+                    continue
+                if adapter.state == ConnectionState.CONNECTED:
+                    self._reconnect_tracker.pop(name, None)
+                    continue
+
+                logger.info(
+                    "Reconnecting %s (attempt %d, delay=%.1fs)",
+                    name, tracker.failures, tracker.delay,
+                )
                 try:
-                    success = asyncio.get_event_loop().run_until_complete(
-                        asyncio.wait_for(adapter.connect(), timeout=10)
-                    )
-                    results[name] = success
-                    if self._health.get(name):
-                        self._health[name].state = adapter.state
-                except Exception:
-                    results[name] = False
-        return results
+                    success = await asyncio.wait_for(adapter.connect(), timeout=10)
+                    if success:
+                        logger.info("Adapter %s reconnected", name)
+                        self._reconnect_tracker.pop(name, None)
+                        if self._health.get(name):
+                            self._health[name].state = ConnectionState.CONNECTED
+                            self._health[name].connected_at = time.time()
+                    else:
+                        self._record_reconnect_failure(name)
+                except asyncio.TimeoutError:
+                    self._record_reconnect_failure(name)
+                    logger.warning("Adapter %s reconnect timed out", name)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    self._record_reconnect_failure(name)
+                    logger.error("Adapter %s reconnect error: %s", name, e)
+
+    def check_reconnects(self) -> dict[str, bool]:
+        """Check reconnect tracker status. Returns per-adapter pending info."""
+        return {
+            name: time.time() >= t.next_attempt
+            for name, t in self._reconnect_tracker.items()
+        }
+
+    # ── Helpers ────────────────────────────────────────────────────────────
+
+    @property
+    def reconnect_pending(self) -> list[str]:
+        """List of adapters pending reconnection."""
+        return list(self._reconnect_tracker.keys())
+
+    @property
+    def reconnect_state(self) -> dict[str, dict]:
+        """Get reconnect state for all tracked adapters."""
+        return {
+            name: {
+                "failures": t.failures,
+                "delay": round(t.delay, 1),
+                "next_attempt": t.next_attempt,
+                "seconds_until": max(0, round(t.next_attempt - time.time(), 1)),
+            }
+            for name, t in self._reconnect_tracker.items()
+        }
 
     def __repr__(self) -> str:
         return (

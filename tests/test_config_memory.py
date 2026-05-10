@@ -25,7 +25,8 @@ from kairos.memory.backends import SQLiteBackend, DictBackend, MemoryBackend
 class TestConfig:
     """Tests for Config layered configuration."""
 
-    def test_empty_config(self):
+    def test_empty_config(self, monkeypatch):
+        monkeypatch.setattr("kairos.config._find_config", lambda: None)
         c = Config(path=None)
         assert c.path is None
         assert c.all() == {}
@@ -63,7 +64,8 @@ class TestConfig:
             assert "model" in data
             assert "providers" in data
 
-    def test_config_repr(self):
+    def test_config_repr(self, monkeypatch):
+        monkeypatch.setattr("kairos.config._find_config", lambda: None)
         c = Config(path=None)
         assert "empty" in repr(c)
 
