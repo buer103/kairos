@@ -59,9 +59,12 @@ def _print_usage():
 
 def _chat_mode(args: list[str]):
     """Interactive chat loop with Rich TUI."""
+    import asyncio
     from kairos import Agent
     from kairos.providers.base import ModelConfig
     from kairos.config import get_config
+    from kairos.security.permission import PermissionManager, PermissionAction, PermissionRequest
+    from kairos.middleware.security_mw import SecurityMiddleware
 
     config = get_config()
     api_key = (
@@ -77,7 +80,44 @@ def _chat_mode(args: list[str]):
 
     console = KairosConsole(skin="default", verbose=False)
     model = ModelConfig(api_key=api_key)
-    agent = Agent(model=model)
+
+    # Set up permission manager with interactive prompt
+    perm = PermissionManager()
+    _perm_console = console  # capture for callback
+
+    async def _prompt_user(request: PermissionRequest) -> PermissionAction | None:
+        """Rich-based permission prompt for CLI chat mode."""
+        _perm_console.console.print()
+        _perm_console.console.print(
+            f"🔐 [bold yellow]Permission Required[/] — [cyan]{request.tool_name}[/]"
+        )
+        if request.description:
+            _perm_console.console.print(f"   {request.description}")
+        if request.path:
+            _perm_console.console.print(f"   Path: [dim]{request.path}[/]")
+
+        _perm_console.console.print()
+        _perm_console.console.print(
+            "  [green][a][/] Allow once   [yellow][y][/] Always allow   [red][n][/] Deny"
+        )
+
+        try:
+            choice = _perm_console.prompt("Permission", default="n")
+            key = choice.strip().lower()[:1]
+            if key == "a":
+                return PermissionAction.ALLOW_ONCE
+            elif key == "y":
+                return PermissionAction.ALLOW_SESSION
+            else:
+                return PermissionAction.DENY
+        except (KeyboardInterrupt, EOFError):
+            return PermissionAction.DENY
+
+    perm.set_prompt_callback(_prompt_user)
+
+    # Create agent with security middleware
+    sec_mw = SecurityMiddleware(permission_manager=perm)
+    agent = Agent(model=model, middlewares=[sec_mw])
 
     console.info("Kairos chat — type /help for available commands")
     console.console.print()
@@ -470,8 +510,45 @@ def _handle_slash(console, cmd: str, agent, model_config):
                     line += f" — {entry.description[:60]}"
                 console.info(line)
 
+    elif command == "/perm":
+        _handle_perm_slash(console, parts, agent)
+
     else:
         console.error(f"Unknown command: {command}. Type /help for available commands.")
+
+def _handle_perm_slash(console, parts: list[str], agent):
+    """Handle /perm commands: /perm show | /perm trust <tool> | /perm ask <tool> | /perm block <tool>."""
+    from kairos.security.permission import PermissionLevel, ToolPolicy
+
+    # Find SecurityMiddleware in agent's middleware chain
+    sec_mw = None
+    for mw in getattr(agent, "_middlewares", []):
+        if hasattr(mw, "permission_manager"):
+            sec_mw = mw
+            break
+
+    if not sec_mw:
+        console.error("Security middleware not active. Add SecurityMiddleware to agent.")
+        return
+
+    perm = sec_mw.permission_manager
+
+    if len(parts) < 2 or parts[1] == "show":
+        console.console.print("\n[bold]Permission Policies:[/]")
+        for pattern, policy in sorted(perm._policies.items()):
+            icon = {"block": "⛔", "ask": "⚠️", "trust": "✅"}.get(policy.level.value, "❓")
+            console.console.print(f"  {icon} [cyan]{pattern}[/] → {policy.level.value}")
+        console.console.print(f"\nDefault: [dim]{perm._default_policy.level.value}[/]")
+        return
+
+    action = parts[1]
+    if action in ("trust", "ask", "block") and len(parts) >= 3:
+        tool_pattern = parts[2]
+        level = PermissionLevel(action)
+        perm.set_policy(ToolPolicy(tool_pattern, level=level))
+        console.success(f"Set {tool_pattern} → {action}")
+    else:
+        console.error("Usage: /perm show | /perm trust <tool> | /perm ask <tool> | /perm block <tool>")
 
 
 if __name__ == "__main__":

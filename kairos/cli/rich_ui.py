@@ -213,6 +213,8 @@ class KairosConsole:
             ("/verbose", "Toggle verbose tool output"),
             ("/cron list", "List scheduled cron jobs"),
             ("/run <query>", "Run a one-shot query"),
+            ("/perm [show|trust|ask|block <tool>]", "Manage permission policies"),
+            ("/skills", "List installed skills"),
         ]
         for cmd, desc in commands:
             table.add_row(cmd, desc)
