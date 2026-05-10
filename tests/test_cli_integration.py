@@ -22,11 +22,12 @@ def test_version(capsys):
         sys.argv = old_argv
 
 
-def test_help_without_args(capsys):
+def test_help_flag(capsys):
+    """--help shows usage (kairos without args now enters chat)."""
     import sys
     old_argv = sys.argv
     try:
-        sys.argv = ["kairos"]
+        sys.argv = ["kairos", "--help"]
         main()
         captured = capsys.readouterr()
         assert "Kairos" in captured.out
@@ -36,28 +37,32 @@ def test_help_without_args(capsys):
 
 
 def test_help_shows_commands(capsys):
+    """--help shows all subcommands."""
     import sys
     old_argv = sys.argv
     try:
-        sys.argv = ["kairos"]
+        sys.argv = ["kairos", "--help"]
         main()
         captured = capsys.readouterr()
         assert "kairos chat" in captured.out
         assert "kairos run" in captured.out
         assert "kairos cron" in captured.out
         assert "kairos config init" in captured.out
+        assert "--resume" in captured.out
+        assert "--list-sessions" in captured.out
     finally:
         sys.argv = old_argv
 
 
-def test_unknown_command(capsys):
+def test_invalid_flag(capsys):
+    """Invalid flags show usage (bare words are now queries, not errors)."""
     import sys
     old_argv = sys.argv
     try:
-        sys.argv = ["kairos", "nonexistent"]
+        sys.argv = ["kairos", "--bogus"]
         main()
         captured = capsys.readouterr()
-        assert "Unknown command" in captured.out
+        assert "Unknown flag" in captured.out
     finally:
         sys.argv = old_argv
 
@@ -80,7 +85,20 @@ def test_cron_list_no_crash(capsys):
         sys.argv = ["kairos", "cron", "list"]
         main()
         captured = capsys.readouterr()
-        # Should not crash
         assert True
+    finally:
+        sys.argv = old_argv
+
+
+def test_list_sessions_flag(capsys):
+    """--list-sessions works (may show none)."""
+    import sys
+    old_argv = sys.argv
+    try:
+        sys.argv = ["kairos", "--list-sessions"]
+        main()
+        captured = capsys.readouterr()
+        # Either "No saved sessions" or list output
+        assert "saved" in captured.out.lower() or "session" in captured.out.lower() or "No API key" in captured.out
     finally:
         sys.argv = old_argv

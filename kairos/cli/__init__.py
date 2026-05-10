@@ -1,4 +1,15 @@
-"""CLI entry point for Kairos — Rich TUI, chat, cron, and config commands."""
+"""CLI entry point for Kairos — Rich TUI, chat, cron, and config commands.
+
+Usage (Hermes-style):
+    kairos                    Interactive chat mode (default)
+    kairos <query>            One-shot query (no 'run' needed)
+    kairos chat               Explicit chat mode
+    kairos run <query>        One-shot query (explicit)
+    kairos --resume <name>    Resume a saved session
+    kairos --list-sessions    List saved sessions
+    kairos --version          Show version
+    kairos cron|config|skill|curator  Management subcommands
+"""
 
 from __future__ import annotations
 
@@ -12,18 +23,33 @@ __all__ = ["KairosConsole", "SKINS", "main"]
 
 
 def main():
-    """Main entry point: kairos chat / kairos run / kairos cron / kairos config / kairos skill / kairos curator."""
+    """Main entry point."""
     args = sys.argv[1:]
 
+    # ── No args → interactive chat (Hermes-style) ────────────
     if not args:
-        _print_usage()
+        _chat_mode([])
         return
 
+    # ── Flags ─────────────────────────────────────────────────
     if args[0] == "--version":
         from kairos import __version__
         print(f"kairos {__version__}")
         return
 
+    if args[0] == "--help" or args[0] == "-h":
+        _print_usage()
+        return
+
+    if args[0] == "--list-sessions":
+        _list_sessions_cmd()
+        return
+
+    if args[0] == "--resume" and len(args) >= 2:
+        _chat_mode([], resume=args[1])
+        return
+
+    # ── Subcommands ───────────────────────────────────────────
     if args[0] == "chat":
         _chat_mode(args[1:])
     elif args[0] == "run":
@@ -36,43 +62,78 @@ def main():
         _skill_mode(args[1:])
     elif args[0] == "curator":
         _curator_mode(args[1:])
-    else:
-        print(f"Unknown command: {args[0]}")
+    elif args[0].startswith("-"):
+        print(f"Unknown flag: {args[0]}")
         _print_usage()
+    else:
+        # ── Bare query → one-shot run (Hermes-style) ──────────
+        _run_mode(args)
 
 
 def _print_usage():
     print("Kairos — The right tool, at the right moment.")
     print()
     print("Usage:")
-    print("  kairos chat                Interactive chat mode (Rich TUI)")
-    print("  kairos run <query>         Single query mode")
+    print("  kairos                     Interactive chat mode (default)")
+    print("  kairos <query>             One-shot query")
+    print("  kairos chat                Explicit interactive chat")
+    print("  kairos run <query>         One-shot query (explicit)")
+    print("  kairos --resume <name>     Resume a saved session")
+    print("  kairos --list-sessions     List saved sessions")
     print("  kairos cron                Cron scheduler management")
     print("  kairos config init         Generate default config file")
     print("  kairos skill list          List installed skills")
-    print("  kairos skill install <url> Install a skill from GitHub/URL/local")
-    print("  kairos skill view <name>   View a skill's content")
     print("  kairos curator status      Show skill lifecycle status")
-    print("  kairos curator clean       Remove archived skills older than 90 days")
     print("  kairos --version           Show version")
 
 
-def _chat_mode(args: list[str]):
-    """Interactive chat loop with Rich TUI."""
-    import asyncio
-    from kairos import Agent
+def _list_sessions_cmd():
+    """CLI: kairos --list-sessions"""
+    from kairos.core.stateful_agent import StatefulAgent
     from kairos.providers.base import ModelConfig
     from kairos.config import get_config
-    from kairos.security.permission import PermissionManager, PermissionAction, PermissionRequest
-    from kairos.middleware.security_mw import SecurityMiddleware
 
+    api_key = _get_api_key()
+    if not api_key:
+        print("No API key found. Set DEEPSEEK_API_KEY or run 'kairos config init'.")
+        return
+
+    agent = StatefulAgent(model=ModelConfig(api_key=api_key))
+    sessions = agent.list_sessions()
+    if not sessions:
+        print("No saved sessions.")
+        return
+
+    print(f"Saved sessions ({len(sessions)}):\n")
+    for s in sessions:
+        ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(s.get("saved_at", 0)))
+        msgs = s.get("message_count", 0)
+        turns = s.get("turn_count", 0)
+        print(f"  ● {s['name']}")
+        print(f"    id={s.get('session_id','?')}  messages={msgs}  turns={turns}  saved={ts}")
+
+
+def _get_api_key() -> str | None:
+    """Get API key from env or config."""
+    from kairos.config import get_config
     config = get_config()
-    api_key = (
+    return (
         os.getenv("DEEPSEEK_API_KEY")
         or os.getenv("OPENAI_API_KEY")
         or config.get("providers.deepseek.api_key")
         or config.get("providers.openai.api_key")
     )
+
+
+def _chat_mode(args: list[str], resume: str | None = None):
+    """Interactive chat loop with Rich TUI."""
+    from kairos import Agent
+    from kairos.core.stateful_agent import StatefulAgent
+    from kairos.providers.base import ModelConfig
+    from kairos.security.permission import PermissionManager, PermissionAction, PermissionRequest
+    from kairos.middleware.security_mw import SecurityMiddleware
+
+    api_key = _get_api_key()
     if not api_key:
         console = KairosConsole()
         console.error("No API key found. Set DEEPSEEK_API_KEY or run 'kairos config init'.")
@@ -81,12 +142,11 @@ def _chat_mode(args: list[str]):
     console = KairosConsole(skin="default", verbose=False)
     model = ModelConfig(api_key=api_key)
 
-    # Set up permission manager with interactive prompt
+    # Permission manager with interactive prompt
     perm = PermissionManager()
-    _perm_console = console  # capture for callback
+    _perm_console = console
 
     async def _prompt_user(request: PermissionRequest) -> PermissionAction | None:
-        """Rich-based permission prompt for CLI chat mode."""
         _perm_console.console.print()
         _perm_console.console.print(
             f"🔐 [bold yellow]Permission Required[/] — [cyan]{request.tool_name}[/]"
@@ -95,31 +155,38 @@ def _chat_mode(args: list[str]):
             _perm_console.console.print(f"   {request.description}")
         if request.path:
             _perm_console.console.print(f"   Path: [dim]{request.path}[/]")
-
         _perm_console.console.print()
         _perm_console.console.print(
             "  [green][a][/] Allow once   [yellow][y][/] Always allow   [red][n][/] Deny"
         )
-
         try:
             choice = _perm_console.prompt("Permission", default="n")
             key = choice.strip().lower()[:1]
-            if key == "a":
-                return PermissionAction.ALLOW_ONCE
-            elif key == "y":
-                return PermissionAction.ALLOW_SESSION
-            else:
-                return PermissionAction.DENY
+            return {"a": PermissionAction.ALLOW_ONCE, "y": PermissionAction.ALLOW_SESSION}.get(
+                key, PermissionAction.DENY)
         except (KeyboardInterrupt, EOFError):
             return PermissionAction.DENY
 
     perm.set_prompt_callback(_prompt_user)
-
-    # Create agent with security middleware
     sec_mw = SecurityMiddleware(permission_manager=perm)
-    agent = Agent(model=model, middlewares=[sec_mw])
 
-    console.info("Kairos chat — type /help for available commands")
+    # Use StatefulAgent for session persistence
+    agent = StatefulAgent(model=model, middlewares=[sec_mw])
+
+    # Resume session if requested
+    if resume:
+        if agent.load_session(resume):
+            console.success(f"Resumed session: {resume}")
+            console.console.print()
+        else:
+            console.error(f"Session not found: {resume}")
+            return
+
+    from kairos import __version__
+    session_count = len(agent.list_sessions())
+    console.info(
+        f"Kairos {__version__} — {session_count} saved session(s) — type /help for commands"
+    )
     console.console.print()
 
     while True:
@@ -170,20 +237,13 @@ def _run_mode(args: list[str]):
     """Single query mode."""
     from kairos import Agent
     from kairos.providers.base import ModelConfig
-    from kairos.config import get_config
 
     if not args:
         console = KairosConsole()
         console.error("Usage: kairos run <query>")
         return
 
-    config = get_config()
-    api_key = (
-        os.getenv("DEEPSEEK_API_KEY")
-        or os.getenv("OPENAI_API_KEY")
-        or config.get("providers.deepseek.api_key")
-        or config.get("providers.openai.api_key")
-    )
+    api_key = _get_api_key()
     if not api_key:
         console = KairosConsole()
         console.error("No API key found.")
@@ -264,11 +324,10 @@ def _cron_mode(args: list[str]):
 
 
 def _config_mode(args: list[str]):
-    """Config management: kairos config init / show."""
+    """Config management."""
     from kairos.config import write_default_config, get_config
 
     console = KairosConsole()
-
     if not args or args[0] == "init":
         path = args[1] if len(args) > 1 else "~/.config/kairos/config.yaml"
         write_default_config(path)
@@ -284,7 +343,7 @@ def _config_mode(args: list[str]):
 
 
 def _skill_mode(args: list[str]):
-    """Skill management: kairos skill list|view|install|uninstall|update."""
+    """Skill management."""
     from kairos.skills.manager import SkillManager
     from kairos.skills.marketplace import SkillMarketplace
 
@@ -292,21 +351,18 @@ def _skill_mode(args: list[str]):
     marketplace = SkillMarketplace(manager)
 
     if not args or args[0] == "list":
-        # Scan first to pick up any new skills
         manager.scan()
         skills = manager.list_skills()
         if not skills:
             print("No skills installed. Use 'kairos skill install <source>' to add one.")
             return
-
         print(f"Installed skills ({manager.stats()['active']} active, {manager.stats()['stale']} stale):\n")
         for entry in skills:
-            status_icon = "●" if entry.status.value == "active" else "○" if entry.status.value == "stale" else "✕"
-            print(f"  {status_icon} {entry.name}")
+            icon = "●" if entry.status.value == "active" else "○" if entry.status.value == "stale" else "✕"
+            print(f"  {icon} {entry.name}")
             if entry.description:
                 print(f"      {entry.description[:80]}")
         print()
-
     elif args[0] == "view" and len(args) >= 2:
         content = manager.get_skill_content(args[1])
         if content is None:
@@ -316,16 +372,9 @@ def _skill_mode(args: list[str]):
         print(f"Status: {content['status']} | Uses: {content['use_count']}")
         if content.get('description'):
             print(f"Description: {content['description']}")
-        linked = {k: v for k, v in content.get('linked_files', {}).items() if v}
-        if linked:
-            print(f"\nLinked files:")
-            for kind, files in linked.items():
-                for f in files:
-                    print(f"  {kind}/{f}")
         print(f"\n--- BEGIN SKILL ---")
         print(content['content'])
         print(f"--- END SKILL ---")
-
     elif args[0] == "install" and len(args) >= 2:
         source = args[1]
         name = args[2] if len(args) > 2 else None
@@ -335,14 +384,12 @@ def _skill_mode(args: list[str]):
             print(f"✅ Installed: {result['name']} → {result['path']}")
         else:
             print(f"❌ Error: {result.get('error')}")
-
     elif args[0] == "uninstall" and len(args) >= 2:
         result = marketplace.uninstall(args[1])
         if result.get("success"):
             print(f"✅ Uninstalled: {result['name']}")
         else:
             print(f"❌ Error: {result.get('error')}")
-
     elif args[0] == "update":
         if len(args) >= 2:
             result = marketplace.update(args[1])
@@ -356,7 +403,6 @@ def _skill_mode(args: list[str]):
             print(f"✅ Updated: {result['name']}")
         else:
             print(f"❌ Error: {result.get('error')}")
-
     elif args[0] == "marketplace":
         skills = marketplace.list_marketplace()
         if not skills:
@@ -368,19 +414,16 @@ def _skill_mode(args: list[str]):
             print(f"    source: {s.get('source', '?')}")
             if s.get('description'):
                 print(f"    {s['description'][:80]}")
-
     else:
         print(f"Unknown skill command: {' '.join(args)}")
         print("Usage: kairos skill [list|view|install|uninstall|update|marketplace]")
 
 
 def _curator_mode(args: list[str]):
-    """Curator lifecycle management: kairos curator status|clean|reindex."""
+    """Curator lifecycle management."""
     from kairos.skills.manager import SkillManager
-    import json
 
     manager = SkillManager()
-
     if not args or args[0] == "status":
         stats = manager.stats()
         print("Curator Status\n" + "=" * 40)
@@ -390,24 +433,19 @@ def _curator_mode(args: list[str]):
         print(f"  Archived:       {stats['archived']}")
         print(f"  Categories:     {stats['categories']}")
         print(f"  Backups:        {stats['backups']}")
-
-        # Show stale skills
         stale = [e for e in manager.list_skills() if e.status.value == "stale"]
         if stale:
             print(f"\nStale skills (unused >30 days):")
             for s in stale:
                 last = "never" if s.last_used_at is None else f"{int(time.time() - s.last_used_at) // 86400}d ago"
                 print(f"  ○ {s.name} (last used: {last})")
-
     elif args[0] == "clean":
         days = int(args[1]) if len(args) > 1 else None
         result = manager.clean(days)
         print(f"Cleaned {result['cleaned']} archived entries ({result['freed_bytes']} bytes freed)")
-
     elif args[0] == "reindex":
         result = manager.reindex()
         print(f"Reindexed: +{result['added']} added, -{result['removed']} removed")
-
     else:
         print(f"Unknown curator command: {' '.join(args)}")
         print("Usage: kairos curator [status|clean|reindex]")
@@ -477,6 +515,31 @@ def _handle_slash(console, cmd: str, agent, model_config):
         else:
             console.info(f"Current model: {getattr(model_config, 'model', 'default')}")
 
+    elif command == "/save":
+        if len(parts) >= 2:
+            if hasattr(agent, "save_session"):
+                agent.save_session(parts[1])
+                console.success(f"Session saved as: {parts[1]}")
+            else:
+                console.error("Current agent doesn't support session persistence.")
+        else:
+            console.error("Usage: /save <name>")
+
+    elif command == "/sessions":
+        if hasattr(agent, "list_sessions"):
+            sessions = agent.list_sessions()
+            if not sessions:
+                console.info("No saved sessions.")
+            else:
+                console.console.print(f"\n[bold]Saved sessions ({len(sessions)}):[/]")
+                for s in sessions[:10]:
+                    ts = time.strftime("%m-%d %H:%M", time.localtime(s.get("saved_at", 0)))
+                    console.console.print(
+                        f"  ● [cyan]{s['name']}[/] ({s.get('message_count',0)} msgs, {s.get('turn_count',0)} turns, {ts})"
+                    )
+        else:
+            console.error("Session listing not available.")
+
     elif command == "/run":
         if len(parts) >= 2:
             query = " ".join(parts[1:])
@@ -504,8 +567,8 @@ def _handle_slash(console, cmd: str, agent, model_config):
             console.info("No skills available. Use 'kairos skill install <source>' to add one.")
         else:
             for entry in skills:
-                status_icon = "●" if entry.status.value == "active" else "○" if entry.status.value == "stale" else "✕"
-                line = f"  {status_icon} {entry.name}"
+                icon = "●" if entry.status.value == "active" else "○" if entry.status.value == "stale" else "✕"
+                line = f"  {icon} {entry.name}"
                 if entry.description:
                     line += f" — {entry.description[:60]}"
                 console.info(line)
@@ -516,11 +579,11 @@ def _handle_slash(console, cmd: str, agent, model_config):
     else:
         console.error(f"Unknown command: {command}. Type /help for available commands.")
 
+
 def _handle_perm_slash(console, parts: list[str], agent):
-    """Handle /perm commands: /perm show | /perm trust <tool> | /perm ask <tool> | /perm block <tool>."""
+    """Handle /perm commands."""
     from kairos.security.permission import PermissionLevel, ToolPolicy
 
-    # Find SecurityMiddleware in agent's middleware chain
     sec_mw = None
     for mw in getattr(agent, "_middlewares", []):
         if hasattr(mw, "permission_manager"):
@@ -528,7 +591,7 @@ def _handle_perm_slash(console, parts: list[str], agent):
             break
 
     if not sec_mw:
-        console.error("Security middleware not active. Add SecurityMiddleware to agent.")
+        console.error("Security middleware not active.")
         return
 
     perm = sec_mw.permission_manager

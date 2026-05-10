@@ -213,6 +213,8 @@ class KairosConsole:
             ("/verbose", "Toggle verbose tool output"),
             ("/cron list", "List scheduled cron jobs"),
             ("/run <query>", "Run a one-shot query"),
+            ("/save <name>", "Save current session"),
+            ("/sessions", "List saved sessions"),
             ("/perm [show|trust|ask|block <tool>]", "Manage permission policies"),
             ("/skills", "List installed skills"),
         ]
