@@ -53,6 +53,7 @@ class ThreadState:
     todos: list[str] = field(default_factory=list)
     artifacts: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    trace_context: Any | None = None  # TraceContext from kairos.core.tracing
 
 
 def merge_artifacts(existing: list[str], new: list[str]) -> list[str]:

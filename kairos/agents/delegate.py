@@ -89,6 +89,10 @@ class SubAgent:
         start = time.time()
 
         try:
+            # Capture parent trace context for full-chain observability
+            from kairos.core.tracing import get_current_trace
+            parent_trace = get_current_trace()
+
             # Run agent loop
             from kairos import Agent
             agent = Agent(
@@ -97,7 +101,7 @@ class SubAgent:
                 max_iterations=10,
             )
 
-            result = agent.run(self.task.goal)
+            result = agent.run(self.task.goal, parent_trace=parent_trace)
             elapsed = (time.time() - start) * 1000
 
             return DelegateResult(

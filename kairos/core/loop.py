@@ -29,6 +29,7 @@ from typing import Any, Callable
 
 from kairos.core.middleware import Middleware, MiddlewarePipeline
 from kairos.core.state import Case, ThreadState
+from kairos.core.tracing import TraceContext, TraceRecorder, set_current_trace
 from kairos.prompt.template import PromptBuilder
 from kairos.providers.base import ModelConfig, ModelProvider
 from kairos.tools.registry import execute_tool, get_tool_schemas
@@ -379,6 +380,12 @@ class Agent:
         self._trajectory_path: Path | None = None
         self._trajectory_events: list[dict] = []
 
+        # ---- Trace recorder (full-chain observability) ----
+        self._trace_recorder = TraceRecorder(
+            output_dir=self._trajectory_dir / "traces"
+        )
+        self._trace_events: list[TraceEvent] = []
+
         # ---- Wire up infrastructure ----
         if rag_store:
             from kairos.tools.rag_search import set_rag_store
@@ -434,14 +441,36 @@ class Agent:
 
     # ---- Run --------------------------------------------------------------
 
-    def run(self, user_message: str, prefill: str | None = None) -> dict[str, Any]:
-        """Run the agent loop one-shot. Returns {content, confidence, evidence}."""
+    def run(
+        self,
+        user_message: str,
+        prefill: str | None = None,
+        parent_trace: TraceContext | None = None,
+    ) -> dict[str, Any]:
+        """Run the agent loop one-shot. Returns {content, confidence, evidence, trace_context}.
+
+        Args:
+            user_message: The user's input message.
+            prefill: Optional assistant prefill for steering.
+            parent_trace: Trace context from a parent agent for sub-agent call chains.
+                         If None, a new root trace is created.
+        """
         case = Case(id=str(uuid.uuid4())[:8])
         state = ThreadState(case=case)
+
+        # ---- Trace context ----
+        if parent_trace:
+            trace_ctx = parent_trace.child()
+        else:
+            trace_ctx = TraceContext.new_root()
+        state.trace_context = trace_ctx
+        set_current_trace(trace_ctx)  # For implicit propagation to sub-agents
+
         runtime: dict[str, Any] = {
             "user_message": user_message,
             "thread_id": case.id,
             "session_id": case.id,
+            "trace_context": trace_ctx,
         }
         messages = [
             {"role": "system", "content": self.system_prompt},
@@ -458,21 +487,42 @@ class Agent:
         self._interrupted = False
         self._active_provider_index = 0
 
-        # Start trajectory
+        # Start trajectory + trace span
         self._start_trajectory(user_message)
+        self._trace_events = []
+        self._log_trace_event(trace_ctx, "span_start", {
+            "model": getattr(self._primary_config, "model", "unknown"),
+            "depth": trace_ctx.depth,
+        })
 
         try:
             result = self._execute_loop(state, runtime)
+            result["trace_context"] = trace_ctx
             self._log_trajectory_event("agent_done", {
                 "content": result.get("content", "")[:200],
                 "confidence": result.get("confidence"),
             })
+            self._log_trace_event(trace_ctx, "span_end", {
+                "status": "success",
+                "iterations": self.budget.iterations,
+                "tokens_used": self.budget.tokens_used,
+            })
             return result
+        except Exception as e:
+            self._log_trace_event(trace_ctx, "span_end", {
+                "status": "error",
+                "error": str(e)[:200],
+                "iterations": self.budget.iterations,
+            })
+            raise
         finally:
             if not self._interrupted:
                 self.pipeline.after_agent(state, runtime)
             self._release_credential()
             self._finish_trajectory()
+            # Flush trace events
+            if self._trace_events:
+                self._trace_recorder.flush_span(trace_ctx, self._trace_events)
 
     # ---- Core Loop --------------------------------------------------------
 
@@ -559,7 +609,12 @@ class Agent:
                 "evidence": self._format_evidence(case),
             }
 
-        # Budget exhausted
+        # ---- Budget exhausted ----
+        self._log_trace_event(
+            runtime.get("trace_context") or getattr(state, "trace_context", None),
+            "budget_exhausted",
+            {"iterations": self.budget.iterations},
+        )
         return {
             "content": "Maximum context or iterations reached.",
             "confidence": None,
@@ -696,6 +751,7 @@ class Agent:
     def _execute_tools(self, msg, messages, state) -> list[dict]:
         """Execute tool calls sequentially. Returns list of tool results."""
         results = []
+        trace_ctx = getattr(state, "trace_context", None)
         for tc in msg.tool_calls:
             tool_name = tc.function.name
             try:
@@ -707,6 +763,10 @@ class Agent:
                 "tool": tool_name,
                 "args": {k: str(v)[:100] for k, v in tool_args.items()},
             })
+            if trace_ctx:
+                self._log_trace_event(trace_ctx, "tool_start", {
+                    "tool": tool_name,
+                })
 
             try:
                 result = self.pipeline.wrap_tool_call(
@@ -719,6 +779,11 @@ class Agent:
                     "tool": tool_name,
                     "success": True,
                 })
+                if trace_ctx:
+                    self._log_trace_event(trace_ctx, "tool_done", {
+                        "tool": tool_name,
+                        "success": True,
+                    })
             except Exception as e:
                 err = classify_error(e)
                 result = {"error": str(e), "kind": err.kind.value}
@@ -726,6 +791,11 @@ class Agent:
                     "tool": tool_name,
                     "error": str(e)[:200],
                 })
+                if trace_ctx:
+                    self._log_trace_event(trace_ctx, "tool_error", {
+                        "tool": tool_name,
+                        "error": str(e)[:200],
+                    })
 
             results.append(result)
 
@@ -819,6 +889,17 @@ class Agent:
                 pass
         return results
 
+    # ---- Trace Event Logging ------------------------------------------------
+
+    def _log_trace_event(
+        self, ctx: TraceContext, event_type: str, data: dict[str, Any] | None = None
+    ) -> None:
+        """Record a trace event for this span."""
+        event = self._trace_recorder.record(
+            ctx, event_type, data, iteration=self.budget.iterations
+        )
+        self._trace_events.append(event)
+
     # ---- Trajectory -------------------------------------------------------
 
     def _start_trajectory(self, user_message: str) -> None:
@@ -909,6 +990,41 @@ class Agent:
             except Exception:
                 pass
         return status
+
+    # ---- Trace Queries -----------------------------------------------------
+
+    def get_trace(self, trace_id: str) -> dict | None:
+        """Retrieve the full trace tree for a trace_id."""
+        return self._trace_recorder.get_span_tree(trace_id)
+
+    def list_traces(self, limit: int = 20) -> list[dict]:
+        """List recent traces with summary info."""
+        results = []
+        trace_dir = self._trace_recorder._output_dir
+        for f in sorted(
+            trace_dir.glob("*.jsonl"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )[:limit]:
+            try:
+                lines = [l for l in f.read_text().strip().split("\n") if l]
+                if not lines:
+                    continue
+                first = json.loads(lines[0])
+                last = json.loads(lines[-1])
+                trace_id = first.get("trace_id", "unknown")
+                results.append({
+                    "trace_id": trace_id,
+                    "span_id": first.get("span_id"),
+                    "depth": first.get("depth", 0),
+                    "events": len(lines),
+                    "started_at": first.get("timestamp"),
+                    "ended_at": last.get("timestamp"),
+                    "status": last.get("status", "unknown"),
+                })
+            except Exception:
+                pass
+        return results
 
     # ---- Helpers ----------------------------------------------------------
 

@@ -28,6 +28,7 @@ class TaskSpec:
     timeout: float = 300.0  # seconds
     toolsets: list[str] | None = None  # e.g. ["terminal", "file"]
     role: str = "leaf"  # "leaf" | "orchestrator"
+    parent_trace: Any | None = None  # TraceContext from parent agent
 
 
 @dataclass
@@ -70,6 +71,7 @@ class SubAgentExecutor:
         sub_type: SubAgentType,
         parent_case: Case | None = None,
         toolsets: list[str] | None = None,
+        parent_trace: Any | None = None,
     ) -> SubAgentResult:
         """Run a sub-agent synchronously, merging evidence into the parent case."""
         sub_case = Case(id=f"sub_{uuid.uuid4().hex[:8]}")
@@ -77,7 +79,7 @@ class SubAgentExecutor:
 
         try:
             agent = self._build_agent(prompt, sub_type, sub_case, toolsets=toolsets)
-            result = agent.run(prompt)
+            result = agent.run(prompt, parent_trace=parent_trace)
 
             if parent_case:
                 self._merge_evidence(sub_case, parent_case)
@@ -129,7 +131,7 @@ class SubAgentExecutor:
             return []
         if n == 1:
             t = tasks[0]
-            return [self.run_sync(t.prompt, t.sub_type, t.parent_case, t.toolsets)]
+            return [self.run_sync(t.prompt, t.sub_type, t.parent_case, t.toolsets, t.parent_trace)]
 
         results: list[SubAgentResult | None] = [None] * n
         errors: list[tuple[int, str]] = []
@@ -187,7 +189,7 @@ class SubAgentExecutor:
 
         try:
             future = _executor_pool.submit(
-                self.run_sync, task.prompt, task.sub_type, task.parent_case, task.toolsets
+                self.run_sync, task.prompt, task.sub_type, task.parent_case, task.toolsets, task.parent_trace
             )
             return future.result(timeout=task.timeout)
         except concurrent.futures.TimeoutError:
@@ -211,12 +213,13 @@ class SubAgentExecutor:
         sub_type: SubAgentType,
         parent_case: Case | None = None,
         toolsets: list[str] | None = None,
+        parent_trace: Any | None = None,
     ) -> str:
         """Run a sub-agent asynchronously. Returns a future_id for polling."""
         future_id = f"sub_{uuid.uuid4().hex[:8]}"
 
         def _run():
-            return self.run_sync(prompt, sub_type, parent_case, toolsets)
+            return self.run_sync(prompt, sub_type, parent_case, toolsets, parent_trace)
 
         with self._lock:
             self._futures[future_id] = _executor_pool.submit(_run)
