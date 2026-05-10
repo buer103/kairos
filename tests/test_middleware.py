@@ -423,10 +423,10 @@ def test_credential_pool_stats():
 
 
 def test_stateful_agent_save_load(tmp_path):
-    agent = StatefulAgent(model=ModelConfig(api_key="test-key"))
-    agent._session_dir = tmp_path
+    from kairos.core.session_backends import FileSessionBackend
+    backend = FileSessionBackend(directory=tmp_path)
+    agent = StatefulAgent(model=ModelConfig(api_key="test-key"), session_backend=backend)
 
-    # Mock state for testing
     from kairos.core.state import ThreadState, Case
     agent._state = ThreadState()
     agent._state.messages = [
@@ -434,8 +434,9 @@ def test_stateful_agent_save_load(tmp_path):
         {"role": "user", "content": "Hello"},
     ]
 
-    path = agent.save_session("test-session")
-    assert path.exists()
+    agent.save_session("test-session")
+    loaded = backend.load("test-session")
+    assert loaded is not None
 
     sessions = agent.list_sessions()
     assert len(sessions) == 1
@@ -444,26 +445,25 @@ def test_stateful_agent_save_load(tmp_path):
 
 
 def test_stateful_agent_load_session(tmp_path):
-    agent = StatefulAgent(model=ModelConfig(api_key="test-key"))
-    agent._session_dir = tmp_path
+    from kairos.core.session_backends import FileSessionBackend
+    backend = FileSessionBackend(directory=tmp_path)
+    agent = StatefulAgent(model=ModelConfig(api_key="test-key"), session_backend=backend)
 
-    # Save first
     from kairos.core.state import ThreadState
     agent._state = ThreadState()
     agent._state.messages = [{"role": "user", "content": "Hi"}]
     agent.save_session("load-test")
 
-    # Load into new agent
-    agent2 = StatefulAgent(model=ModelConfig(api_key="test-key"))
-    agent2._session_dir = tmp_path
+    agent2 = StatefulAgent(model=ModelConfig(api_key="test-key"), session_backend=backend)
     assert agent2.load_session("load-test")
     assert agent2.history == [{"role": "user", "content": "Hi"}]
 
 
 
 def test_stateful_agent_delete_session(tmp_path):
-    agent = StatefulAgent(model=ModelConfig(api_key="test-key"))
-    agent._session_dir = tmp_path
+    from kairos.core.session_backends import FileSessionBackend
+    backend = FileSessionBackend(directory=tmp_path)
+    agent = StatefulAgent(model=ModelConfig(api_key="test-key"), session_backend=backend)
 
     from kairos.core.state import ThreadState
     agent._state = ThreadState()
@@ -487,7 +487,6 @@ def test_stateful_agent_reset():
 
 def test_stateful_agent_interrupt(tmp_path):
     agent = StatefulAgent(model=ModelConfig(api_key="test-key"))
-    agent._session_dir = tmp_path
     from kairos.core.state import ThreadState
     agent._state = ThreadState()
     agent._state.messages = [{"role": "user", "content": "hi"}]

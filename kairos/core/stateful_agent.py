@@ -1,14 +1,19 @@
-"""Stateful Agent — multi-turn conversation with session persistence + streaming."""
+"""Stateful Agent — multi-turn conversation with session persistence + streaming.
+
+Supports pluggable session backends:
+    - FileSessionBackend (default, local JSON)
+    - RedisSessionBackend (production, multi-process)
+"""
 
 from __future__ import annotations
 
-import json
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Generator
 
 from kairos.core.loop import Agent
+from kairos.core.session_backends import FileSessionBackend, SessionBackend
 from kairos.core.state import Case, ThreadState
 
 
@@ -16,18 +21,27 @@ class StatefulAgent(Agent):
     """Multi-turn agent that maintains conversation state across calls.
 
     Inherits budget control, interrupt, and checkpoint from Agent.
-    Adds session persistence and streaming.
+    Adds session persistence (file or Redis) and streaming.
+
+    Args:
+        session_backend: Pluggable persistence backend. Defaults to FileSessionBackend.
+        session_id: Explicit session ID. Auto-generated if omitted.
     """
 
-    def __init__(self, *args, session_id: str | None = None, **kwargs):
+    def __init__(
+        self,
+        *args,
+        session_id: str | None = None,
+        session_backend: SessionBackend | None = None,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self._session_id = session_id or str(uuid.uuid4())[:8]
         self._state: ThreadState | None = None
         self._runtime: dict[str, Any] = {}
         self._turn_count = 0
         self._auto_save = True
-        self._session_dir = Path.home() / ".kairos" / "sessions"
-        self._session_dir.mkdir(parents=True, exist_ok=True)
+        self._backend = session_backend or FileSessionBackend()
 
     # ── Properties ──────────────────────────────────────────────
 
@@ -44,6 +58,10 @@ class StatefulAgent(Agent):
         if self._state is None:
             return []
         return [m for m in self._state.messages if m.get("role") != "system"]
+
+    @property
+    def session_backend(self) -> SessionBackend:
+        return self._backend
 
     # ── Chat ────────────────────────────────────────────────────
 
@@ -87,14 +105,39 @@ class StatefulAgent(Agent):
 
     # ── Session Persistence ──────────────────────────────────────
 
-    def save_session(self, name: str | None = None) -> Path:
+    def save_session(self, name: str | None = None) -> None:
+        """Save current conversation to the session backend."""
         if self._state is None:
             raise ValueError("No active conversation to save.")
         save_name = name or self._session_id
-        path = self._session_dir / f"{save_name}.json"
-        data = {
-            "session_id": self._session_id, "name": save_name,
-            "saved_at": time.time(), "turn_count": self._turn_count,
+        data = self._pack_session(save_name)
+        self._backend.save(self._session_id, save_name, data)
+
+    def load_session(self, name: str) -> bool:
+        """Load a conversation from the session backend."""
+        data = self._backend.load(name)
+        if data is None:
+            return False
+        self._unpack_session(data)
+        return True
+
+    def list_sessions(self) -> list[dict[str, Any]]:
+        """List all saved sessions from the backend."""
+        return self._backend.list_sessions()
+
+    def delete_session(self, name: str) -> bool:
+        """Delete a saved session from the backend."""
+        return self._backend.delete(name)
+
+    # ── Internal ─────────────────────────────────────────────────
+
+    def _pack_session(self, name: str) -> dict[str, Any]:
+        """Serialize current state into a JSON-safe dict."""
+        data: dict[str, Any] = {
+            "session_id": self._session_id,
+            "name": name,
+            "saved_at": time.time(),
+            "turn_count": self._turn_count,
             "messages": self._state.messages,
             "metadata": dict(self._state.metadata or {}),
         }
@@ -108,18 +151,14 @@ class StatefulAgent(Agent):
                     for s in self._state.case.steps
                 ],
             }
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2, default=str))
-        return path
+        return data
 
-    def load_session(self, name: str) -> bool:
-        path = self._session_dir / f"{name}.json"
-        if not path.exists():
-            return False
-        data = json.loads(path.read_text())
+    def _unpack_session(self, data: dict[str, Any]) -> None:
+        """Restore state from a loaded session dict."""
         self._session_id = data["session_id"]
-        self._turn_count = data["turn_count"]
+        self._turn_count = data.get("turn_count", 0)
         self._state = ThreadState()
-        self._state.messages = data["messages"]
+        self._state.messages = data.get("messages", [])
         self._state.metadata = data.get("metadata", {})
         cd = data.get("case", {})
         if cd.get("id"):
@@ -128,31 +167,8 @@ class StatefulAgent(Agent):
             for s in cd.get("steps", []):
                 step = self._state.case.add_step(s["tool"], s["args"])
                 if hasattr(self._state.case, "complete_step"):
-                    self._state.case.complete_step(step, s.get("result"), s.get("duration_ms", 0))
-        return True
-
-    def list_sessions(self) -> list[dict[str, Any]]:
-        sessions = []
-        for f in sorted(self._session_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
-            try:
-                d = json.loads(f.read_text())
-                sessions.append({
-                    "name": d.get("name", f.stem), "session_id": d.get("session_id"),
-                    "saved_at": d.get("saved_at"), "turn_count": d.get("turn_count", 0),
-                    "message_count": len(d.get("messages", [])),
-                })
-            except Exception:
-                pass
-        return sessions
-
-    def delete_session(self, name: str) -> bool:
-        path = self._session_dir / f"{name}.json"
-        if path.exists():
-            path.unlink()
-            return True
-        return False
-
-    # ── Internal ─────────────────────────────────────────────────
+                    self._state.case.complete_step(
+                        step, s.get("result"), s.get("duration_ms", 0))
 
     def _init_conversation(self, user_message: str) -> ThreadState:
         case = Case(id=f"{self._session_id}_{self._turn_count}")
