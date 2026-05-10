@@ -453,8 +453,14 @@ class Agent:
             user_message: The user's input message.
             prefill: Optional assistant prefill for steering.
             parent_trace: Trace context from a parent agent for sub-agent call chains.
-                         If None, a new root trace is created.
+                       If None, a new root trace is created.
         """
+        import time as _time
+        _t0 = _time.time()
+
+        from kairos.observability.metrics import get_metrics
+        metrics = get_metrics()
+
         case = Case(id=str(uuid.uuid4())[:8])
         state = ThreadState(case=case)
 

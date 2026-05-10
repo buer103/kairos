@@ -82,6 +82,7 @@ class GatewayServer:
         self._app.router.add_get("/ready", self._handle_ready)
         self._app.router.add_get("/health/detailed", self._handle_health_detailed)
         self._app.router.add_get("/stats", self._handle_stats)
+        self._app.router.add_get("/metrics", self._handle_metrics)
         self._app.router.add_post("/sessions/clear", self._handle_clear_sessions)
 
         # Graceful shutdown handlers
@@ -277,6 +278,22 @@ class GatewayServer:
             "sessions": len(self._sessions),
             "error_rate": round(self._error_count / max(self._request_count, 1), 3),
         }))
+
+    async def _handle_metrics(self, request) -> Any:
+        """Prometheus-compatible /metrics endpoint."""
+        from aiohttp import web
+        from kairos.observability.metrics import get_metrics
+
+        reg = get_metrics()
+        reg.set_gauge("active_sessions", float(len(self._sessions)))
+        reg.set_gauge("uptime_seconds", round(time.time() - self._started_at, 1))
+        reg.update_process_metrics()
+
+        resp = web.Response(
+            text=reg.render(),
+            content_type="text/plain; version=0.0.4; charset=utf-8",
+        )
+        return self._cors(resp)
 
     async def _handle_clear_sessions(self, request) -> Any:
         from aiohttp import web
