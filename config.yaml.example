@@ -1,0 +1,103 @@
+# Kairos Production Configuration
+# Copy to ~/.config/kairos/config.yaml or mount as /home/kairos/.config/kairos/config.yaml
+
+# ── Default Provider ──────────────────────────────────────────
+# Options: deepseek, openai, openrouter, groq, qwen, anthropic, gemini
+provider: deepseek
+
+# ── Model Settings ────────────────────────────────────────────
+model:
+  name: deepseek-chat        # override default model
+  max_tokens: 8192
+  temperature: 0.0
+
+# ── API Keys ───────────────────────────────────────────────────
+# Set via environment variables (recommended) or here directly.
+# Environment: DEEPSEEK_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.
+# api_keys:
+#   deepseek: sk-...
+
+# ── Fallback Providers ────────────────────────────────────────
+# Ordered list — tried in sequence if primary fails.
+# fallback_providers:
+#   - provider: openai
+#     model: gpt-4o-mini
+#   - provider: groq
+#     model: llama-3.3-70b-versatile
+
+# ── Gateway ────────────────────────────────────────────────────
+gateway:
+  host: 0.0.0.0
+  port: 8080
+  session_ttl: 3600           # 1 hour
+  request_timeout: 300         # 5 minutes
+  cors_origins:
+    - "*"
+
+  # ── Webhook Server (for Telegram/WeChat/Slack/etc) ──────────
+  webhook:
+    enabled: false
+    port: 8443
+    path: /webhook
+
+  # ── Rate Limiting ───────────────────────────────────────────
+  rate_limit:
+    enabled: true
+    requests_per_minute: 60
+    burst: 10
+
+# ── Security ───────────────────────────────────────────────────
+security:
+  enabled: true
+  allowed_paths:
+    - /home/kairos/workspace
+  block_dangerous_files: true
+  block_internal_urls: true
+
+# ── Logging ────────────────────────────────────────────────────
+logging:
+  level: INFO                  # DEBUG | INFO | WARNING | ERROR
+  format: json                 # json | text
+  file: /home/kairos/.kairos/logs/kairos.log
+  rotation:
+    max_bytes: 10485760        # 10 MB
+    backup_count: 5
+
+# ── Memory ─────────────────────────────────────────────────────
+memory:
+  backend: sqlite              # sqlite | dict
+  db_path: /home/kairos/.kairos/memory/memory.db
+  tiered: true                 # Enable 3-tier memory (profile/timeline/facts)
+  confidence_threshold: 0.7
+  max_injection_tokens: 2000
+  fact_ttl_days: 90
+
+# ── Skills ─────────────────────────────────────────────────────
+skills:
+  dir: /home/kairos/.kairos/skills
+  external_dirs: []
+  auto_load: true
+
+# ── Sub-agents ─────────────────────────────────────────────────
+subagents:
+  enabled: true
+  max_concurrent: 3
+  default_timeout: 300
+
+# ── Sandbox ────────────────────────────────────────────────────
+sandbox:
+  provider: local              # local | docker | ssh
+  # docker_image: kairos-sandbox:latest
+  # ssh_host: sandbox.internal
+
+# ── Observability ──────────────────────────────────────────────
+observability:
+  insights: true               # Enable agent insights (health reports, anomaly detection)
+  usage_tracking: true         # Track token usage and cost
+  error_classification: true   # Sliding-window error detection
+
+# ── Trajectory ────────────────────────────────────────────────
+trajectory:
+  enabled: true
+  dir: /home/kairos/.kairos/trajectories
+  format: jsonl                # jsonl (ShareGPT format)
