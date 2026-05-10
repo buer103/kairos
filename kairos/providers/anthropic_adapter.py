@@ -268,7 +268,8 @@ class AnthropicProvider:
     def __init__(self, config: ModelConfig):
         self.config = config
         self._api_key = config.api_key
-        self._client = Anthropic(api_key=config.api_key)
+        _ant = _get_anthropic()
+        self._client = _ant.Anthropic(api_key=config.api_key)
         logger.info(
             "AnthropicProvider initialized model=%s max_tokens=%d",
             config.model,
