@@ -76,9 +76,11 @@ class Config:
         model = config.get("model.name", default="deepseek-chat")
     """
 
-    def __init__(self, path: str | Path | None = None):
+    def __init__(self, path: str | Path | None = None, validate: bool = True):
         self._data: dict[str, Any] = {}
         self._path: Path | None = None
+        self._validated: bool = False
+        self._validation_errors: list[str] = []
 
         if path:
             p = Path(path).expanduser()
@@ -93,6 +95,10 @@ class Config:
 
         # Merge env vars
         self._merge_env()
+
+        # Validate schema
+        if validate:
+            self._run_validation()
 
     def get(self, key: str, default: Any = None) -> Any:
         """Get a value by dot-separated key. Falls back to env var, then default.
@@ -157,6 +163,41 @@ class Config:
     @property
     def path(self) -> Path | None:
         return self._path
+
+    @property
+    def validated(self) -> bool:
+        """Whether the loaded config passed schema validation."""
+        return self._validated
+
+    @property
+    def validation_errors(self) -> list[str]:
+        """Schema validation errors (empty if valid)."""
+        return list(self._validation_errors)
+
+    def validate(self) -> bool:
+        """Explicitly re-validate the config. Returns True if valid."""
+        self._run_validation()
+        return self._validated
+
+    def _run_validation(self) -> None:
+        """Run schema validation and store results."""
+        try:
+            from kairos.config_schema import validate_config
+            validate_config(self._data)
+            self._validated = True
+            self._validation_errors = []
+        except Exception as e:
+            self._validated = False
+            from kairos.config_schema import _flatten_errors
+            self._validation_errors = _flatten_errors(e)
+            # Log but don't crash — backward compatible
+            import logging
+            logger = logging.getLogger("kairos.config")
+            logger.warning(
+                "Config validation failed (%d errors): %s",
+                len(self._validation_errors),
+                "; ".join(self._validation_errors[:3]),
+            )
 
     def __repr__(self) -> str:
         return f"Config(path={self._path})" if self._path else "Config(empty)"
