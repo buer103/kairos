@@ -92,7 +92,9 @@ class TestBuiltinProfiles:
     """Verify all built-in profiles have correct structure."""
 
     def test_all_builtin_profiles_present(self):
-        expected = {"deepseek", "openrouter", "groq", "qwen", "openai", "anthropic", "gemini"}
+        expected = {"deepseek", "openrouter", "groq", "qwen", "openai", "anthropic", "gemini",
+                     "mistral", "together", "perplexity", "cohere", "xai",
+                     "replicate", "azure", "cloudflare", "fireworks", "huggingface"}
         assert set(BUILTIN_PROFILES.keys()) == expected
 
     def test_deepseek_profile(self):
@@ -169,7 +171,7 @@ class TestProviderRegistry:
 
     def test_list_profiles(self, registry):
         profiles = registry.list()
-        assert len(profiles) >= 7
+        assert len(profiles) >= 17
         # Sorted by display_name
         display_names = [p.display_name for p in profiles]
         assert display_names == sorted(display_names)
