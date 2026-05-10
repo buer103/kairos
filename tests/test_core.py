@@ -246,7 +246,7 @@ def test_environment_registry():
 
 
 def test_retry_config():
-    cfg = RetryConfig(max_retries=3, base_delay=1.0)
+    cfg = RetryConfig(max_retries=3, base_delay=1.0, jitter=False)
     delay = cfg.delay_for_attempt(0)
     assert delay > 0
     delay2 = cfg.delay_for_attempt(1)

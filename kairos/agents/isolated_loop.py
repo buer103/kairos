@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import concurrent.futures
 import logging
 import threading
 from contextvars import copy_context
@@ -88,9 +89,9 @@ def run_in_isolated_loop(coro: Coroutine, timeout: float = 300) -> Any:
 
     try:
         return future.result(timeout=timeout)
-    except TimeoutError:
+    except (TimeoutError, concurrent.futures.TimeoutError):
         future.cancel()
-        raise
+        raise TimeoutError(f"Coroutine timed out after {timeout}s")
 
 
 async def run_in_isolated_loop_async(coro: Coroutine, timeout: float = 300) -> Any:
