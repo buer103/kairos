@@ -9,7 +9,7 @@ description = "Kairos — The right tool, at the right moment. An AI agent frame
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
-authors = [{ name = "buer103", email = "buer103@github" }]
+authors = [{ name = "buer103", email = "buer103@users.noreply.github.com" }]
 keywords = ["ai", "agent", "llm", "rag", "framework", "middleware", "cron", "gateway"]
 classifiers = [
     "Development Status :: 4 - Beta",
