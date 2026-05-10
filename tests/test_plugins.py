@@ -424,4 +424,12 @@ class TestBuiltinPlugins:
         assert "anthropic" in providers
         assert "gemini" in providers
         assert "deepseek" in providers
-        assert "gpt-4o" in providers["openai"]["models"]
+        assert "openrouter" in providers
+        assert "groq" in providers
+        assert "qwen" in providers
+        assert providers["openai"]["default_model"] == "gpt-4o"
+        assert providers["deepseek"]["default_model"] == "deepseek-chat"
+        assert providers["openrouter"]["base_url"] == "https://openrouter.ai/api/v1"
+        assert providers["groq"]["env_api_key"] == "GROQ_API_KEY"
+        assert providers["qwen"]["env_api_key"] == "DASHSCOPE_API_KEY"
+        assert providers["anthropic"]["requires_native_sdk"] is True

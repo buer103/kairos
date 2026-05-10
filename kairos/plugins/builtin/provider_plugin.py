@@ -70,22 +70,16 @@ def register(manager) -> None:
 
 def get_available_providers() -> dict[str, dict]:
     """Get all registered provider info."""
-    return {
-        "openai": {
-            "description": "OpenAI models (built-in)",
-            "models": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
-            "base_url": "https://api.openai.com/v1",
-        },
-        "anthropic": {
-            "description": "Anthropic Claude models (pip install anthropic)",
-            "models": ["claude-sonnet-4-20250514", "claude-opus-4-20250514"],
-        },
-        "gemini": {
-            "description": "Google Gemini models (pip install google-genai)",
-            "models": ["gemini-2.5-pro", "gemini-2.5-flash"],
-        },
-        "deepseek": {
-            "description": "DeepSeek models (OpenAI-compatible)",
-            "models": ["deepseek-chat", "deepseek-reasoner"],
-        },
-    }
+    from kairos.providers.registry import BUILTIN_PROFILES
+    result = {}
+    for name, profile in BUILTIN_PROFILES.items():
+        entry = {
+            "display_name": profile.display_name,
+            "description": profile.description,
+            "base_url": profile.base_url,
+            "default_model": profile.default_model,
+            "env_api_key": profile.env_api_key,
+            "requires_native_sdk": profile.requires_native_sdk,
+        }
+        result[name] = entry
+    return result
