@@ -132,7 +132,7 @@ print(result["trace_context"])  # TraceContext for full-chain observability
 
 ## ✅ Status
 
-**Beta — 695 tests passing. 46 commits. v0.15.0.**
+**Beta — 695 tests passing. 47 commits. v0.15.0.**
 
 - [x] Architecture design + 4-framework comparison matrix
 - [x] Phase 1: Agent Loop, Prompt Engine, RAG, Knowledge, Evidence, Middleware
@@ -158,5 +158,5 @@ print(result["trace_context"])  # TraceContext for full-chain observability
 ---
 
 <p align="center">
-  <sub>Built by <a href="https://github.com/buer103">buer103</a> · 46 commits · 695 tests · v0.15.0</sub>
+  <sub>Built by <a href="https://github.com/buer103">buer103</a> · 47 commits · 695 tests · v0.15.0</sub>
 </p>
