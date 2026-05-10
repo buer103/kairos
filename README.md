@@ -114,7 +114,7 @@ print(result["confidence"])  # 0.92
 
 ## ✅ Status
 
-**Alpha — 137 integration tests passing.**
+**Alpha — 566 tests passing.**
 
 - [x] Architecture design + module comparison matrix
 - [x] Phase 1: Agent Loop, Prompt Engine, RAG, Knowledge, Evidence, Middleware
@@ -125,9 +125,10 @@ print(result["confidence"])  # 0.92
 - [x] Phase 6: Cron scheduler, Rich TUI, Sandbox wiring, Sub-agent delegation
 - [x] Phase 7: Gateway expansion (7 → 11 platforms), layered context compression
 - [x] Phase 8: Config system, pyproject.toml, CLI polish, README
+- [x] Phase 9: Full test coverage — 7 new test files, 299→566 tests (+89%), 21 modules covered
 
 ---
 
 <p align="center">
-  <sub>Built by <a href="https://github.com/buer103">buer103</a> · 15 commits · 137 tests</sub>
+  <sub>Built by <a href="https://github.com/buer103">buer103</a> · 36 commits · 566 tests</sub>
 </p>
