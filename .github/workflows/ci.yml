@@ -32,7 +32,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          pip install openai pydantic rich aiohttp
+          pip install openai pydantic rich aiohttp anthropic
           pip install pytest pytest-asyncio
           pip install -e .
 

@@ -335,6 +335,9 @@ class TestModelConfig:
 class TestAnthropicProvider:
     """Tests for Anthropic native API adapter (conversion + provider)."""
 
+    import pytest
+    pytest.importorskip("anthropic")
+
     # ── Tool conversion ──────────────────────────────────────
 
     def test_convert_tools_openai_to_anthropic(self):
@@ -601,6 +604,7 @@ class TestProviderFactory:
     """Tests for ProviderFactory.create() detection logic."""
 
     def test_creates_anthropic_by_provider_name(self):
+        pytest.importorskip("anthropic")
         import anthropic
         import kairos.providers.anthropic_adapter as adapter
         adapter._anthropic = anthropic  # pre-load lazy import
@@ -617,6 +621,7 @@ class TestProviderFactory:
         assert isinstance(provider, AnthropicProvider)
 
     def test_creates_anthropic_by_base_url(self):
+        pytest.importorskip("anthropic")
         import anthropic
         import kairos.providers.anthropic_adapter as adapter
         adapter._anthropic = anthropic  # pre-load lazy import

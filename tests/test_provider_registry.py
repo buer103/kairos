@@ -231,6 +231,7 @@ class TestProviderRegistry:
 
     def test_create_provider_native_sdk(self, registry):
         """Anthropic and Gemini should return native adapters."""
+        pytest.importorskip("anthropic")
         # Anthropic
         provider = registry.create_provider("anthropic", api_key="sk-ant-test")
         from kairos.providers.anthropic_adapter import AnthropicProvider
