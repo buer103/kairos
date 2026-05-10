@@ -37,6 +37,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Gateway server (HTTP + SSE)
+gateway = ["aiohttp>=3.9.0"]
 # Token-accurate compression
 compress = ["tiktoken>=0.5.0"]
 # RAG / vector search

@@ -4,7 +4,8 @@
 FROM python:3.12-slim AS builder
 WORKDIR /app
 COPY pyproject.toml .
-RUN pip install --no-cache-dir --user kairos-agent
+# Pre-install deps for layer caching
+RUN pip install --no-cache-dir --user openai pydantic rich aiohttp
 
 FROM python:3.12-slim AS runtime
 LABEL org.opencontainers.image.title="Kairos Agent"
@@ -19,17 +20,15 @@ COPY --from=builder /root/.local /home/kairos/.local
 ENV PATH="/home/kairos/.local/bin:$PATH"
 ENV PYTHONUNBUFFERED=1
 
-# Copy source for editable install / development
+# Copy source and install
 COPY --chown=kairos:kairos . /app
 WORKDIR /app
-RUN pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir -e ".[gateway]"
 
 USER kairos
 
 # Gateway: HTTP API + Webhook server
 EXPOSE 8080
-# Optional: direct CLI port
-EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')" || exit 1
