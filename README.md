@@ -3,6 +3,13 @@
   <p align="center"><strong>The right tool, at the right moment.</strong></p>
 </p>
 
+<p align="center">
+  <a href="https://github.com/buer103/kairos/actions"><img src="https://github.com/buer103/kairos/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://pypi.org/project/kairos-agent"><img src="https://img.shields.io/pypi/v/kairos-agent" alt="PyPI"></a>
+  <a href="https://github.com/buer103/kairos/blob/master/LICENSE"><img src="https://img.shields.io/github/license/buer103/kairos" alt="License"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/pypi/pyversions/kairos-agent" alt="Python"></a>
+</p>
+
 ---
 
 **Kairos** is an AI agent framework that fuses the best of
@@ -125,7 +132,7 @@ print(result["trace_context"])  # TraceContext for full-chain observability
 
 ## ✅ Status
 
-**Alpha — 695 tests passing. 44 commits. v0.15.0-dev.**
+**Beta — 695 tests passing. 46 commits. v0.15.0.**
 
 - [x] Architecture design + 4-framework comparison matrix
 - [x] Phase 1: Agent Loop, Prompt Engine, RAG, Knowledge, Evidence, Middleware
@@ -151,5 +158,5 @@ print(result["trace_context"])  # TraceContext for full-chain observability
 ---
 
 <p align="center">
-  <sub>Built by <a href="https://github.com/buer103">buer103</a> · 44 commits · 695 tests · v0.15.0-dev</sub>
+  <sub>Built by <a href="https://github.com/buer103">buer103</a> · 46 commits · 695 tests · v0.15.0</sub>
 </p>

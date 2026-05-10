@@ -2,20 +2,28 @@
 
 All notable changes to Kairos will be documented in this file.
 
-## [v0.15.0-dev] — 2026-05-10
+## [v0.15.0] — 2026-05-10
 
 ### Added
 
 - **Trace ID full-chain observability** — span tree with trace_id/span_id/parent_span_id, JSONL persistence, context-var based implicit propagation across sub-agents, `get_trace()` / `list_traces()` API (21 tests)
 - **Tiered Memory (3 tiers)** — DeerFlow-compatible Profile/Timeline/Facts with confidence≥0.7 filtering, per-agent isolation, 2000 token injection budget, TTL expiry (34 tests)
 - **Provider Registry** — 7 built-in profiles (DeepSeek, OpenRouter, Groq, Qwen, OpenAI, Anthropic, Gemini), auto-detection of native SDK vs OpenAI-compat, env var fallback (35 tests)
-- **Documentation** — rewritten README with full stats, complete ARCHITECTURE.md with 62-module tree and 30-feature comparison matrix, CHANGELOG.md
+- **Gateway Entry Point** — `python -m kairos.gateway` with CLI flags, auto API key detection, graceful shutdown
+- **Production Config Template** — comprehensive `config.yaml.example` with all sections
+- **Deployment Guide** — Docker Compose / direct Python / systemd instructions, API reference, health monitoring, troubleshooting
+- **CI/CD Pipeline** — GitHub Actions: test matrix (3.10/3.11/3.12), ruff lint, Docker build verification
+- **Makefile** — test, lint, fmt, build, docker, run, clean commands
+- **Documentation** — rewritten README with badges, complete ARCHITECTURE.md (62 modules, 30 features), CHANGELOG, DEPLOYMENT guide
 
 ### Changed
 
 - Memory system upgraded from flat key-value to 3-tier with confidence filter
 - Provider plugin now reads from centralized ProviderRegistry (was 4 hardcoded entries)
+- Version: v0.15.0-dev → v0.15.0 (Beta)
+- pyproject.toml: Development Status Alpha → Beta, added ruff, project URLs
 - Tests: 605 → 695 (+90)
+- Commits: 41 → 46
 
 ## [v0.15.0-dev] — 2026-05-09
 

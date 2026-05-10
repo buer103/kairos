@@ -4,22 +4,31 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kairos-agent"
-version = "0.15.0-dev"
+version = "0.15.0"
 description = "Kairos — The right tool, at the right moment. An AI agent framework."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
-authors = [{ name = "buer103" }]
+authors = [{ name = "buer103", email = "buer103@github" }]
 keywords = ["ai", "agent", "llm", "rag", "framework", "middleware", "cron", "gateway"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
 ]
+
+[project.urls]
+Homepage = "https://github.com/buer103/kairos"
+Documentation = "https://github.com/buer103/kairos/blob/master/docs/ARCHITECTURE.md"
+Repository = "https://github.com/buer103/kairos"
+Issues = "https://github.com/buer103/kairos/issues"
+Changelog = "https://github.com/buer103/kairos/blob/master/CHANGELOG.md"
 
 dependencies = [
     "openai>=1.0.0",
@@ -36,6 +45,7 @@ rag = ["chromadb>=0.4.0"]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
+    "ruff>=0.3.0",
 ]
 # Everything
 all = [
@@ -54,3 +64,11 @@ exclude = ["tests*"]
 testpaths = ["tests"]
 python_files = ["smoke_test.py", "test_*.py"]
 addopts = ["-q", "--tb=short"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = ["E501"]  # line too long — handled by formatter

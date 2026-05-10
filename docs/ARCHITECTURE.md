@@ -1,4 +1,4 @@
-# Kairos — Framework Architecture (v0.15.0-dev)
+# Kairos — Framework Architecture (v0.15.0)
 
 > **Kairos** (καιρός): the decisive moment.  
 > An agent should act not whenever it can, but exactly when it should.
