@@ -297,4 +297,6 @@ class PluginManager:
 
 
 # Lazy import to avoid circular dependency
-from kairos.logging import get_logger
+from kairos.logging import get_logger  # noqa: E402
+
+__all__ = ["PluginManifest", "PluginManager"]
