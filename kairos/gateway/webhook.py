@@ -162,14 +162,34 @@ class WebhookServer:
         if not self._check_rate_limit("discord"):
             return web.json_response({"error": "Rate limited"}, status=429)
 
+        raw_body = await request.read()
+
         try:
-            body = await request.json()
+            body = json.loads(raw_body)
         except Exception:
             return web.json_response({"error": "Invalid JSON"}, status=400)
 
         # Discord ping verification
         if body.get("type") == 1:
             return web.json_response({"type": 1})
+
+        # Ed25519 signature verification
+        headers_lower = {k.lower(): v for k, v in request.headers.items()}
+        from kairos.gateway.signatures import verify_discord
+        public_key = ""
+        if self._manager:
+            adapter = self._manager.get("discord")
+            if adapter and hasattr(adapter, "public_key"):
+                public_key = adapter.public_key
+        if public_key:
+            ok = verify_discord(
+                public_key=public_key,
+                signature_hex=headers_lower.get("x-signature-ed25519", ""),
+                timestamp=headers_lower.get("x-signature-timestamp", ""),
+                raw_body=raw_body,
+            )
+            if not ok:
+                return web.json_response({"error": "Invalid signature"}, status=401)
 
         chat_id = body.get("channel_id", "")
         await self._enqueue("discord", chat_id, body)
@@ -258,8 +278,9 @@ class WebhookServer:
         if not self._check_rate_limit("feishu"):
             return web.json_response({"error": "Rate limited"}, status=429)
 
+        raw_body = await request.read()
         try:
-            body = await request.json()
+            body = json.loads(raw_body)
         except Exception:
             return web.json_response({"error": "Invalid JSON"}, status=400)
 
@@ -267,6 +288,17 @@ class WebhookServer:
         if body.get("type") == "url_verification":
             challenge = body.get("challenge", "")
             return web.json_response({"challenge": challenge})
+
+        # HMAC-SHA256 signature verification
+        headers_lower = {k.lower(): v for k, v in request.headers.items()}
+        from kairos.gateway.signatures import verify_feishu
+        secret = ""
+        if self._manager:
+            adapter = self._manager.get("feishu")
+            if adapter and hasattr(adapter, "verification_token"):
+                secret = adapter.verification_token
+        if secret and not verify_feishu(secret, headers_lower, raw_body):
+            return web.json_response({"code": -1, "msg": "Invalid signature"}, status=403)
 
         event = body.get("event", body)
         chat_id = event.get("open_chat_id", event.get("chat_id", ""))
@@ -285,14 +317,38 @@ class WebhookServer:
             mode = request.query.get("hub.mode", "")
             token = request.query.get("hub.verify_token", "")
             challenge = request.query.get("hub.challenge", "")
-            # Return challenge if mode is subscribe and token matches
-            if mode == "subscribe" and token:
+            # Verify against configured verify_token
+            verify_token = ""
+            if self._manager:
+                adapter = self._manager.get("whatsapp")
+                if adapter and hasattr(adapter, "verify_token"):
+                    verify_token = adapter.verify_token
+            if mode == "subscribe" and token and (not verify_token or token == verify_token):
                 return web.Response(text=str(challenge))
             return web.Response(text="Verification failed", status=403)
 
-        # POST: message callback
+        # POST: message callback with HMAC-SHA256 verification
+        raw_body = await request.read()
+        headers_lower = {k.lower(): v for k, v in request.headers.items()}
+
+        # Verify X-Hub-Signature-256
+        from kairos.gateway.signatures import verify_whatsapp
+        app_secret = ""
+        if self._manager:
+            adapter = self._manager.get("whatsapp")
+            if adapter and hasattr(adapter, "app_secret"):
+                app_secret = adapter.app_secret
+        if app_secret:
+            ok = verify_whatsapp(
+                app_secret=app_secret,
+                raw_body=raw_body,
+                signature=headers_lower.get("x-hub-signature-256", ""),
+            )
+            if not ok:
+                return web.Response(text="Invalid signature", status=401)
+
         try:
-            body = await request.json()
+            body = json.loads(raw_body)
         except Exception:
             return web.json_response({"error": "Invalid JSON"}, status=400)
 
