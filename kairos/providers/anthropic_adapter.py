@@ -282,11 +282,37 @@ class AnthropicProvider:
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
+        enable_cache: bool = False,
         **kwargs,
     ) -> _Response:
-        """Send a chat completion request. Returns an OpenAI-shaped response."""
+        """Send a chat completion request. Returns an OpenAI-shaped response.
+
+        Args:
+            messages: OpenAI-format messages.
+            tools: OpenAI-format tool schemas.
+            enable_cache: Enable Anthropic prompt caching (~90% cost reduction
+                on cached tokens). Marks system + last 2 messages as cacheable.
+        """
         system, anthropic_msgs = _convert_openai_messages_to_anthropic(messages)
         anthropic_tools = _convert_openai_tools_to_anthropic(tools)
+
+        # ── Prompt Caching ──────────────────────────────────
+        if enable_cache:
+            # Mark system prompt as cacheable (largest static block)
+            if isinstance(system, list):
+                for block in system:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        block["cache_control"] = {"type": "ephemeral"}
+            elif system:
+                system = [
+                    {"type": "text", "text": system,
+                     "cache_control": {"type": "ephemeral"}},
+                ]
+
+            # Mark last 2 messages as cacheable (recent context)
+            cache_count = min(2, len(anthropic_msgs))
+            for i in range(len(anthropic_msgs) - cache_count, len(anthropic_msgs)):
+                anthropic_msgs[i]["content"][-1]["cache_control"] = {"type": "ephemeral"}
 
         params: dict[str, Any] = {
             "model": self.config.model,
