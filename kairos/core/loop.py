@@ -691,14 +691,32 @@ class Agent:
         return {"error": str(last_error)}
 
     def _switch_provider(self) -> None:
-        """Move to the next provider in the chain."""
+        """Move to the next healthy provider in the chain, or back to primary."""
         self._release_credential()
-        self._active_provider_index = (self._active_provider_index + 1) % len(self._provider_chain)
-        logger.warning(
-            "Switched to provider %d/%d",
-            self._active_provider_index + 1,
-            len(self._provider_chain),
-        )
+
+        # Try recovering primary first
+        if self._active_provider_index != 0:
+            primary_health = self._health[0]
+            if primary_health.is_healthy:
+                self._active_provider_index = 0
+                logger.info("Provider failover recovered — back to primary")
+                return
+
+        # Find next healthy provider
+        for offset in range(1, len(self._provider_chain)):
+            idx = (self._active_provider_index + offset) % len(self._provider_chain)
+            if self._health[idx].is_healthy:
+                self._active_provider_index = idx
+                logger.warning(
+                    "Switched to provider %d/%d (%s)",
+                    self._active_provider_index + 1,
+                    len(self._provider_chain),
+                    self._active_provider.model,
+                )
+                return
+
+        # All providers unhealthy — stay on current
+        logger.error("All %d providers unhealthy", len(self._provider_chain))
 
     # ---- Credential Management --------------------------------------------
 
