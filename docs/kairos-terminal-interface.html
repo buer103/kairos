@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=900">
+<title>Kairos Terminal Interface</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Inter:wght@400;600;700&display=swap');
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: #0d1117;
+  color: #c9d1d9;
+  font-family: 'JetBrains Mono', monospace;
+  padding: 40px 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 32px;
+}
+
+.header {
+  text-align: center;
+  margin-bottom: 8px;
+}
+.header h1 {
+  font-family: 'Inter', sans-serif;
+  font-size: 32px;
+  font-weight: 700;
+  background: linear-gradient(135deg, #58a6ff, #3fb950);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  margin-bottom: 4px;
+}
+.header p {
+  color: #8b949e;
+  font-size: 13px;
+  font-family: 'Inter', sans-serif;
+}
+
+/* Terminal window */
+.terminal {
+  width: 880px;
+  background: #161b22;
+  border-radius: 10px;
+  border: 1px solid #30363d;
+  overflow: hidden;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+}
+.titlebar {
+  background: #21262d;
+  padding: 8px 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid #30363d;
+}
+.dots { display: flex; gap: 6px; }
+.dot { width: 12px; height: 12px; border-radius: 50%; }
+.dot-r { background: #ff5f56; }
+.dot-y { background: #ffbd2e; }
+.dot-g { background: #27c93f; }
+.title { color: #8b949e; font-size: 12px; margin-left: 8px; }
+
+.content { padding: 18px 20px; font-size: 12.5px; line-height: 1.7; }
+
+/* Inline styles */
+.c { color: #58a6ff; }      /* cyan - agent */
+.g { color: #3fb950; }      /* green - user */
+.y { color: #d29922; }      /* yellow - tool */
+.r { color: #f85149; }      /* red - error */
+.d { color: #8b949e; }      /* dim */
+.w { color: #c9d1d9; }      /* white */
+.b { font-weight: 700; }
+
+.panel-agent {
+  border: 1px solid #58a6ff33;
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin: 10px 0;
+  background: #0d111733;
+  position: relative;
+}
+.panel-title {
+  font-size: 11px;
+  font-weight: 700;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #21262d;
+}
+.panel-user {
+  border: 1px solid #3fb95033;
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin: 10px 0;
+  background: #0d111733;
+}
+
+/* Markdown inside */
+.md-h1 { color: #58a6ff; font-size: 15px; font-weight: 700; margin: 12px 0 4px; }
+.md-h2 { color: #58a6ff; font-size: 13px; font-weight: 700; margin: 10px 0 3px; }
+.md-p { margin: 4px 0; }
+.md-code {
+  display: block;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin: 8px 0;
+  color: #7ee787;
+  font-size: 12px;
+  overflow-x: auto;
+}
+.md-inline { color: #d2a8ff; background: #21262d; padding: 1px 5px; border-radius: 3px; font-size: 11.5px; }
+.md-bold { font-weight: 700; }
+.md-link { color: #58a6ff; text-decoration: underline; }
+
+/* Tool call */
+.tool-block {
+  margin: 10px 0;
+  padding: 8px 12px;
+  border-left: 2px solid #d29922;
+  background: #21262d55;
+  border-radius: 0 6px 6px 0;
+  font-size: 11.5px;
+}
+.tool-icon { margin-right: 4px; }
+
+/* Spinner */
+.spinner { display: inline-flex; align-items: center; gap: 6px; color: #58a6ff; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.spin { animation: spin 1s linear infinite; display: inline-block; }
+
+/* Status bar */
+.status-bar {
+  background: #21262d;
+  border-top: 1px solid #30363d;
+  padding: 6px 20px;
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: #8b949e;
+}
+
+/* Token usage */
+.usage {
+  margin: 6px 0 12px;
+  font-size: 11px;
+  color: #8b949e;
+}
+
+/* Permission prompt */
+.perm {
+  border: 1px solid #d29922;
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin: 8px 0;
+  background: #21262d44;
+  font-size: 12px;
+}
+
+/* Version badge */
+.ver { font-size: 10px; color: #484f58; }
+
+.typing { display: inline-block; animation: blink 0.8s infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+/* Section title */
+.section-title {
+  font-family: 'Inter', sans-serif;
+  font-size: 18px;
+  font-weight: 600;
+  color: #c9d1d9;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #21262d;
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>καιρός — Kairos</h1>
+  <p>Rich Terminal Interface &nbsp;·&nbsp; v0.16.0</p>
+</div>
+
+<!-- ══════════════════ TERMINAL 1: Chat Session ═══════════════════ -->
+<div class="section-title" style="width:880px">📟 Interactive Chat Session</div>
+
+<div class="terminal">
+  <div class="titlebar">
+    <div class="dots"><div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div></div>
+    <span class="title">kairos — WSL — bash</span>
+  </div>
+  <div class="content">
+    <div class="d">ℹ️  Kairos 0.16.0 — 3 saved session(s) — type /help for commands</div>
+    <div class="d">ℹ️  Model: deepseek-chat  ·  Streaming: ON  ·  Ctrl+C to interrupt</div>
+    <div style="margin-bottom:10px"></div>
+
+    <!-- User input -->
+    <div class="panel-user">
+      <div class="d panel-title">You</div>
+      帮我分析一下这个项目的架构
+    </div>
+
+    <!-- Agent response with streaming indicator -->
+    <div class="panel-agent">
+      <div class="c panel-title">🤖 Kairos</div>
+      <div class="md-p">好的，让我先查看项目结构...</div>
+      <div style="margin:6px 0"></div>
+
+      <!-- Tool call -->
+      <div class="tool-block">
+        <span class="y">🔧 search_files</span> <span class="d">(120ms)</span><br>
+        <span class="d">pattern: "*.py" target: "files"</span>
+      </div>
+
+      <div class="md-p" style="margin-top:8px">这是一个 AI Agent 框架，核心架构分为三层：</div>
+
+      <div class="md-h2">1. Agent Loop（智能体循环）</div>
+      <div class="md-p">基于 ReAct 模式：<span class="md-inline">think → tool_call → observe → repeat</span></div>
+
+      <div class="md-h2">2. Middleware Pipeline（中间件管道）</div>
+      <div class="md-p">20 层中间件按依赖顺序排列，逐层处理请求：</div>
+      <div class="md-code">ThreadData → Uploads → DanglingToolCall → SkillLoader
+→ ContextCompressor → Todo → Memory → ViewImage
+→ EvidenceTracker → ToolArgRepair → ConfidenceScorer
+→ LLMRetry → Logging → SubagentLimit → Title
+→ MemoryMiddleware → Clarification</div>
+
+      <div class="md-h2">3. 核心模块</div>
+      <div class="md-p">• <span class="md-bold">1276</span> 个测试覆盖，全绿</div>
+      <div class="md-p">• <span class="md-bold">17</span> 个 LLM Provider 适配器</div>
+      <div class="md-p">• <span class="md-bold">11</span> 个消息平台 Gateway 适配器</div>
+      <div class="md-p">• <span class="md-bold">6</span> 个安全防护模块</div>
+      <div class="md-p">• <span class="md-link">GitHub: buer103/kairos</span></div>
+    </div>
+
+    <!-- Token usage -->
+    <div class="usage">📊 Tokens: 1,847  ·  in: 1,234  ·  out: 613  ·  ≈ $0.0048  ·  total: 3,421 / $0.0087</div>
+
+    <!-- User input -->
+    <div class="panel-user">
+      <div class="d panel-title">You</div>
+      /help
+    </div>
+
+    <!-- Help table -->
+    <div class="panel-agent" style="border-color:#3fb95033">
+      <div class="c panel-title">Kairos Slash Commands</div>
+      <table style="width:100%;font-size:12px;border-collapse:collapse;margin-top:4px">
+        <tr style="color:#8b949e"><td style="padding:3px 8px;font-weight:600">Command</td><td style="padding:3px 8px;font-weight:600">Description</td></tr>
+        <tr><td class="c" style="padding:3px 8px">/exit, /quit</td><td class="d" style="padding:3px 8px">退出会话</td></tr>
+        <tr><td class="c" style="padding:3px 8px">/help</td><td class="d" style="padding:3px 8px">显示帮助</td></tr>
+        <tr><td class="c" style="padding:3px 8px">/history</td><td class="d" style="padding:3px 8px">对话历史摘要</td></tr>
+        <tr><td class="c" style="padding:3px 8px">/clear</td><td class="d" style="padding:3px 8px">清除对话历史</td></tr>
+        <tr><td class="c" style="padding:3px 8px">/model &lt;name&gt;</td><td class="d" style="padding:3px 8px">切换模型</td></tr>
+        <tr><td class="c" style="padding:3px 8px">/skin &lt;name&gt;</td><td class="d" style="padding:3px 8px">切换皮肤 (default/hacker/retro/minimal)</td></tr>
+        <tr><td class="c" style="padding:3px 8px">/tools</td><td class="d" style="padding:3px 8px">列出可用工具</td></tr>
+        <tr><td class="c" style="padding:3px 8px">/verbose</td><td class="d" style="padding:3px 8px">切换详细输出</td></tr>
+        <tr><td class="c" style="padding:3px 8px">/save &lt;name&gt;</td><td class="d" style="padding:3px 8px">保存当前会话</td></tr>
+        <tr><td class="c" style="padding:3px 8px">/sessions</td><td class="d" style="padding:3px 8px">列出已保存会话</td></tr>
+        <tr><td class="c" style="padding:3px 8px">/perm</td><td class="d" style="padding:3px 8px">权限策略管理</td></tr>
+        <tr><td class="c" style="padding:3px 8px">/skills</td><td class="d" style="padding:3px 8px">列出已安装技能</td></tr>
+      </table>
+    </div>
+
+    <div style="margin-bottom:6px"></div>
+    <div class="spinner"><span class="spin">⠋</span> <span class="c">Thinking...</span></div>
+  </div>
+  <div class="status-bar">
+    <span>model: <b style="color:#58a6ff">deepseek-chat</b></span>
+    <span>session: <b style="color:#3fb950">debug-session</b></span>
+    <span>tokens: 3,421</span>
+    <span>cost: $0.0087</span>
+  </div>
+</div>
+
+<!-- ══════════════════ TERMINAL 2: Skins ═══════════════════ -->
+<div class="section-title" style="width:880px;margin-top:20px">🎨 10 Built-in Skins</div>
+
+<div style="display:flex;gap:12px;flex-wrap:wrap;width:880px">
+  <div class="terminal" style="width:284px;font-size:11px">
+    <div class="titlebar" style="padding:4px 10px"><span style="color:#27c93f;font-size:11px">● default</span></div>
+    <div class="content" style="padding:10px 14px">
+      <div class="c b">🤖 Kairos</div>
+      <div class="d">Clean, readable default</div>
+      <div style="margin-top:6px;padding:6px;border:1px solid #58a6ff44;border-radius:4px">
+        <span class="c">cyan</span> · <span class="g">green</span> · <span class="y">yellow</span> · <span class="r">red</span>
+      </div>
+    </div>
+  </div>
+  <div class="terminal" style="width:284px;font-size:11px;background:#0a0a0a">
+    <div class="titlebar" style="padding:4px 10px;background:#111"><span style="color:#00ff00;font-size:11px">● hacker</span></div>
+    <div class="content" style="padding:10px 14px">
+      <div style="color:#00ff00;font-weight:700">🤖 Kairos</div>
+      <div style="color:#555">Matrix-inspired</div>
+      <div style="margin-top:6px;padding:6px;border:1px solid #0f03;border-radius:4px">
+        <span style="color:#00ff00">green</span> · <span style="color:#ffff00">yellow</span> · <span style="color:#ff0000">red</span>
+      </div>
+    </div>
+  </div>
+  <div class="terminal" style="width:284px;font-size:11px;background:#1a1025">
+    <div class="titlebar" style="padding:4px 10px;background:#241538"><span style="color:#ff66ff;font-size:11px">● neon</span></div>
+    <div class="content" style="padding:10px 14px">
+      <div style="color:#ff00ff;font-weight:700">🤖 Kairos</div>
+      <div style="color:#666">Cyberpunk neon</div>
+      <div style="margin-top:6px;padding:6px;border:2px solid #f0f4;border-radius:4px">
+        <span style="color:#ff00ff">magenta</span> · <span style="color:#0ff">cyan</span> · <span style="color:#0f0">green</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════ TERMINAL 3: Architecture ═══════════════════ -->
+<div class="section-title" style="width:880px;margin-top:20px">🏗️ Architecture</div>
+
+<div class="terminal" style="font-size:12px">
+  <div class="content">
+    <div class="md-code" style="line-height:1.4">
+      User Message → Gateway (11 platforms)
+          │
+          ▼
+┌─────────────────────────────────────────────────┐
+│       <span class="c">Middleware Pipeline</span> (<span class="y">20 layers</span>)          │
+│  ThreadData → Uploads → Dangling → SkillLoader │
+│  → Compress → Todo → Memory → ViewImage        │
+│  → Evidence → ToolArgRepair → Confidence       │
+│  → LLMRetry → Logging → SubagentLimit → Title  │
+│  → MemoryMW → Clarify                          │
+│  + SandboxAudit + LoopDetection                 │
+├─────────────────────────────────────────────────┤
+│           <span class="g">Agent Loop</span> (ReAct + Stateful)         │
+│      think → tool_call → observe → repeat       │
+├────────────────────┬────────────────────────────┤
+│   <span class="y">Tool Registry</span>    │    Infrastructure           │
+│   (23 tools)       │  RAG · KnowledgeStore       │
+│   Browser·MCP      │  EvidenceDB · Tracing       │
+│   Vision·RAG       │  Memory (3 tiers)            │
+│   Knowledge        │  Skills+Curator             │
+└────────────────────┴────────────────────────────┘
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════ Deploy Info ═══════════════════ -->
+<div class="section-title" style="width:880px;margin-top:20px">🚀 Quick Start</div>
+
+<div class="terminal" style="font-size:12px">
+  <div class="content">
+    <div class="md-code" style="line-height:1.6">
+<span class="d"># Install</span>
+<span class="g">pip install kairos-agent</span>
+<span class="d"># or dev install</span>
+<span class="g">git clone https://github.com/buer103/kairos</span>
+<span class="g">cd kairos && pip install -e .</span>
+
+<span class="d"># Set API key</span>
+<span class="g">export DEEPSEEK_API_KEY=sk-...</span>
+
+<span class="d"># Interactive chat (with live streaming)</span>
+<span class="g">kairos</span>
+
+<span class="d"># One-shot query</span>
+<span class="g">kairos "分析这个项目的架构"</span>
+
+<span class="d"># Start Gateway (REST API + multi-platform)</span>
+<span class="g">python -m kairos.gateway --port 8080</span>
+
+<span class="d"># Docker deploy</span>
+<span class="g">docker compose up -d</span>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
