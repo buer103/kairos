@@ -224,24 +224,34 @@ class StatefulAgent(Agent):
             self.pipeline.after_model(state, runtime)
 
             if tool_calls:
-                for tc in tool_calls:
+                import json as _json_smart
+                from kairos.tools.registry import execute_tools_smart
+
+                # Smart dispatch: parallel when safe
+                smart_results = execute_tools_smart(tool_calls)
+
+                for i, tc in enumerate(tool_calls):
                     name = tc["name"]
                     try:
-                        args = _json.loads(tc["arguments"])
+                        args_raw = tc.get("arguments", tc.get("args", "{}"))
+                        if isinstance(args_raw, str):
+                            args = _json_smart.loads(args_raw)
+                        else:
+                            args = args_raw
                     except Exception:
                         args = {}
                     result = self.pipeline.wrap_tool_call(
-                        name, args, lambda n, a, **kw: execute_tool(n, a), state=state,
+                        name, args, lambda n, a, **kw: smart_results[i], state=state,
                     )
                     messages.append({
                         "role": "assistant", "tool_calls": [{
                             "id": tc["id"], "type": "function",
-                            "function": {"name": name, "arguments": tc["arguments"]},
+                            "function": {"name": name, "arguments": tc.get("arguments", "{}")},
                         }],
                     })
                     messages.append({
                         "role": "tool", "tool_call_id": tc["id"],
-                        "content": _json.dumps(result, ensure_ascii=False),
+                        "content": _json_smart.dumps(result, ensure_ascii=False),
                     })
                 self.budget.step()
                 continue

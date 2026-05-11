@@ -755,10 +755,28 @@ class Agent:
     # ---- Tool Execution ---------------------------------------------------
 
     def _execute_tools(self, msg, messages, state) -> list[dict]:
-        """Execute tool calls sequentially. Returns list of tool results."""
+        """Execute tool calls with smart parallel dispatch.
+
+        Uses execute_tools_smart() — parallelizes read-only and path-scoped
+        tools automatically, falls back to serial for write/interactive tools.
+        """
+        from kairos.tools.registry import execute_tools_smart
+
         results = []
         trace_ctx = getattr(state, "trace_context", None)
+
+        # Normalize tool calls from OpenAI format
+        tool_calls = []
         for tc in msg.tool_calls:
+            tool_calls.append({
+                "name": tc.function.name,
+                "arguments": tc.function.arguments,
+            })
+
+        # Smart dispatch: parallel when safe, serial otherwise
+        smart_results = execute_tools_smart(tool_calls)
+
+        for i, tc in enumerate(msg.tool_calls):
             tool_name = tc.function.name
             try:
                 tool_args = json.loads(tc.function.arguments)
@@ -774,11 +792,12 @@ class Agent:
                     "tool": tool_name,
                 })
 
+            # Wrap through pipeline (permission check, audit, etc.)
             try:
                 result = self.pipeline.wrap_tool_call(
                     tool_name,
                     tool_args,
-                    lambda name, args, **kw: execute_tool(name, args),
+                    lambda name, args, **kw: smart_results[i],
                     state=state,
                 )
                 self._log_trajectory_event("tool_done", {

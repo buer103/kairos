@@ -1,11 +1,23 @@
-"""Self-registering tool registry with timeout, categories, and parallel execution."""
+"""Self-registering tool registry with timeout, categories, parallel execution, and smart dispatch.
+
+Features:
+  - Self-registering decorator with OpenAI-compatible schema
+  - Categories: read_only, write, interactive for safe parallelization
+  - Smart dispatch: auto-detects parallel-safe batches, falls back to serial
+  - Path-scoped parallelism: file tools with non-overlapping paths run concurrently
+  - Timeout enforcement per-tool
+  - Tool statistics (calls, errors, duration)
+  - Plugin tool registration
+"""
 
 from __future__ import annotations
 
 import concurrent.futures
 import json
 import logging
+import os
 import time
+from pathlib import Path
 from threading import Lock
 from typing import Any, Callable
 
@@ -14,6 +26,35 @@ logger = logging.getLogger("kairos.tools")
 _registry: dict[str, dict[str, Any]] = {}
 _lock = Lock()
 DEFAULT_TIMEOUT = 30  # seconds
+
+# ══════════════════════════════════════════════════════════════
+# Parallel execution configuration
+# ══════════════════════════════════════════════════════════════
+
+# Tools that must never run concurrently (interactive / user-facing).
+_NEVER_PARALLEL_TOOLS: frozenset[str] = frozenset({"clarify"})
+
+# Read-only tools — no shared mutable state, always safe to parallelize.
+_PARALLEL_SAFE_TOOLS: frozenset[str] = frozenset({
+    "read_file",
+    "search_files",
+    "session_search",
+    "skill_view",
+    "skills_list",
+    "vision_analyze",
+    "web_search",
+    "rag_search",
+    "knowledge_lookup",
+    "list_files",
+})
+
+# File tools that can run concurrently when targeting independent paths.
+_PATH_SCOPED_TOOLS: frozenset[str] = frozenset({
+    "read_file", "write_file", "patch",
+})
+
+# Maximum number of concurrent worker threads.
+_MAX_TOOL_WORKERS: int = 8
 
 
 def register_tool(
@@ -239,3 +280,129 @@ def execute_tools_parallel(
 def _call_tool(fn: Callable, args: dict) -> Any:
     """Internal: call the tool function with args."""
     return fn(**args)
+
+
+# ══════════════════════════════════════════════════════════════
+# Smart parallel dispatch
+# ══════════════════════════════════════════════════════════════
+
+
+def _should_parallelize_tool_batch(tool_calls: list[dict]) -> bool:
+    """Return True when a tool-call batch is safe to run concurrently.
+
+    A batch is parallel-safe when:
+      1. All tools are either _PARALLEL_SAFE_TOOLS or _PATH_SCOPED_TOOLS
+      2. No tool is in _NEVER_PARALLEL_TOOLS
+      3. Path-scoped tools target independent (non-overlapping) paths
+      4. Batch has 2+ calls
+    """
+    if len(tool_calls) <= 1:
+        return False
+
+    tool_names = [tc.get("name", tc.get("function", {}).get("name", "")) for tc in tool_calls]
+    if any(name in _NEVER_PARALLEL_TOOLS for name in tool_names):
+        return False
+
+    reserved_paths: list[Path] = []
+    for tc in tool_calls:
+        name = tc.get("name", tc.get("function", {}).get("name", ""))
+        raw_args = tc.get("arguments", tc.get("args", {}))
+        if isinstance(raw_args, str):
+            try:
+                args = json.loads(raw_args)
+            except Exception:
+                return False
+        else:
+            args = raw_args
+        if not isinstance(args, dict):
+            return False
+
+        if name in _PATH_SCOPED_TOOLS:
+            scoped_path = _extract_parallel_scope_path(name, args)
+            if scoped_path is None:
+                return False
+            if any(_paths_overlap(scoped_path, existing) for existing in reserved_paths):
+                return False
+            reserved_paths.append(scoped_path)
+            continue
+
+        if name not in _PARALLEL_SAFE_TOOLS:
+            return False
+
+    return True
+
+
+def _extract_parallel_scope_path(tool_name: str, args: dict) -> Path | None:
+    """Return the normalized file target for path-scoped tools."""
+    raw_path = args.get("path")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        return None
+
+    expanded = Path(raw_path).expanduser()
+    if expanded.is_absolute():
+        return Path(os.path.abspath(str(expanded)))
+
+    return Path(os.path.abspath(str(Path.cwd() / expanded)))
+
+
+def _paths_overlap(left: Path, right: Path) -> bool:
+    """Return True when two paths may refer to the same subtree."""
+    left_parts = left.parts
+    right_parts = right.parts
+    if not left_parts or not right_parts:
+        return bool(left_parts) == bool(right_parts) and bool(left_parts)
+    common_len = min(len(left_parts), len(right_parts))
+    return left_parts[:common_len] == right_parts[:common_len]
+
+
+def execute_tools_smart(
+    tool_calls: list[dict],
+    timeout: float | None = None,
+    max_workers: int | None = None,
+) -> list[dict[str, Any]]:
+    """Execute tool calls — parallel when safe, serial otherwise.
+
+    Auto-detects parallel-safe batches using _should_parallelize_tool_batch.
+    Falls back to serial `execute_tool` for unsafe batches.
+
+    Args:
+        tool_calls: List of tool call dicts with 'name'/'arguments' or
+                    'function'/'name'/'arguments' keys.
+        timeout: Max seconds per tool (None = use per-tool defaults).
+        max_workers: Max concurrent threads (default: _MAX_TOOL_WORKERS).
+
+    Returns:
+        List of result dicts in the same order as tool_calls.
+    """
+    if not tool_calls:
+        return []
+
+    # Normalize tool call format
+    normalized_calls = []
+    for tc in tool_calls:
+        func = tc.get("function", tc)
+        name = func.get("name", tc.get("name", ""))
+        raw_args = func.get("arguments", tc.get("arguments", {}))
+        if isinstance(raw_args, str):
+            try:
+                args = json.loads(raw_args)
+            except Exception:
+                args = {}
+        else:
+            args = raw_args
+        normalized_calls.append((name, args))
+
+    # Try parallel execution
+    if _should_parallelize_tool_batch(tool_calls):
+        workers = max_workers or _MAX_TOOL_WORKERS
+        logger.debug(
+            "Parallel execution: %d tools with %d workers",
+            len(normalized_calls), workers,
+        )
+        return execute_tools_parallel(normalized_calls, timeout=timeout, max_workers=workers)
+
+    # Serial fallback
+    results = []
+    for name, args in normalized_calls:
+        results.append(execute_tool(name, args, timeout=timeout))
+    return results
