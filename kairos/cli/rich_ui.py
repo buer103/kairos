@@ -2,18 +2,22 @@
 
 Features:
   - Rich panels for agent output
+  - **Live streaming output** — token-by-token rendering via Rich Live
   - Spinner while LLM is thinking
-  - Skin / theme system (light, dark, hacker, retro)
+  - Skin / theme system (10 skins via SkinEngine)
   - Slash commands: /exit, /help, /history, /clear, /model, /tools, /verbose
   - Tool call visualization with tree rendering
-  - Streaming output support
+  - **Status bar** — model, session, token usage
+  - **Token usage + cost tracking**
+  - Markdown with syntax-highlighted code blocks
 """
 
 from __future__ import annotations
 
 import os
 import sys
-from typing import Any
+import time
+from typing import Any, Generator
 
 from rich.console import Console
 from rich.panel import Panel
@@ -27,6 +31,10 @@ from rich.live import Live
 from rich.syntax import Syntax
 from rich.prompt import Prompt
 from rich.box import Box, ROUNDED, HEAVY, SIMPLE, MINIMAL
+from rich.layout import Layout
+from rich.align import Align
+from rich.columns import Columns
+
 
 # ═══════════════════════════════════════════════════════════════
 # Skins / Themes
@@ -73,7 +81,11 @@ SKINS = {
 
 
 class KairosConsole:
-    """Rich-powered console for Kairos agent interactions."""
+    """Rich-powered console for Kairos agent interactions.
+
+    Supports streaming output via :meth:`stream_response` for real-time
+    token-by-token rendering using Rich Live.
+    """
 
     def __init__(
         self,
@@ -90,13 +102,19 @@ class KairosConsole:
         self._spinner: Spinner | None = None
         self._live: Live | None = None
 
+        # Status bar info
+        self._status_model: str = ""
+        self._status_session: str = ""
+        self._total_tokens: int = 0
+        self._total_cost: float = 0.0
+
     # ═══════════════════════════════════════════════════════════
     # Output helpers
     # ═══════════════════════════════════════════════════════════
 
     def agent_output(self, content: str, confidence: float | None = None) -> None:
         """Display agent response in a styled panel."""
-        md = Markdown(content)
+        md = Markdown(content, code_theme="monokai")
         title_parts = [Text("🤖 Kairos", style=self.skin["agent_color"])]
         if confidence is not None:
             title_parts.append(Text(f"  [conf={confidence:.2f}]", style="dim"))
@@ -189,6 +207,172 @@ class KairosConsole:
                 self._live.update(self._spinner)
 
     # ═══════════════════════════════════════════════════════════
+    # Streaming output
+    # ═══════════════════════════════════════════════════════════
+
+    def stream_response(
+        self,
+        stream: Generator[dict, None, None],
+        agent_name: str = "Kairos",
+    ) -> tuple[str, dict | None]:
+        """Render streaming agent output live using Rich Live.
+
+        Handles multi-turn streaming (tool calls cause the agent loop
+        to make another LLM call — tokens from multiple turns are
+        rendered seamlessly).
+
+        Args:
+            stream: Generator yielding events: {type: "token"|"tool_call"|
+                    "tool_delta"|"done", ...}
+            agent_name: Label for the panel title.
+
+        Returns:
+            (final_content, final_event) — the accumulated content and
+            the last "done" event dict (contains usage stats if available).
+        """
+        content_blocks: list[str] = []
+        current_block: list[str] = []
+        tool_call_names: list[str] = []
+        final_event: dict | None = None
+        block_count = 0
+
+        def _build_markdown() -> str:
+            parts = []
+            for i, block in enumerate(content_blocks):
+                if i > 0:
+                    parts.append(f"\n\n---\n*🔧 `{tool_call_names[i - 1]}`*\n")
+                parts.append(block)
+            if current_block:
+                if len(content_blocks) > 0:
+                    parts.append(f"\n\n---\n*🔧 `{tool_call_names[-1]}`*\n" if tool_call_names else "")
+                parts.append("".join(current_block))
+            return "".join(parts)
+
+        def _render_panel(content: str) -> Panel:
+            # Status bar line
+            status_parts = []
+            if self._status_model:
+                status_parts.append(f"[dim]model:[/] {self._status_model}")
+            if self._status_session:
+                status_parts.append(f"[dim]session:[/] {self._status_session}")
+            tokens_str = f"[dim]tokens:[/] {self._total_tokens:,}"
+            if self._total_cost > 0:
+                tokens_str += f" [dim]cost:[/] ${self._total_cost:.4f}"
+            status_parts.append(tokens_str)
+
+            status_bar = Align.center(
+                Text(" · ".join(status_parts), style="dim"),
+            )
+
+            md = Markdown(content, code_theme="monokai") if content.strip() else Text("")
+            body = Panel(
+                md,
+                title=Text(f"🤖 {agent_name}", style=self.skin["agent_color"]),
+                border_style=self.skin["agent_color"],
+                box=self.skin["box"],
+            )
+
+            full = Table.grid()
+            full.add_row(body)
+            full.add_row(status_bar)
+            return Panel(full, box=MINIMAL, padding=(0, 0))
+
+        if not self.stream:
+            # Non-streaming fallback: collect all tokens, render once
+            for event in stream:
+                if event["type"] == "token":
+                    current_block.append(event["content"])
+                elif event["type"] == "tool_call":
+                    tool_call_names.append(event.get("name", "tool"))
+                elif event["type"] == "done":
+                    if current_block:
+                        content_blocks.append("".join(current_block))
+                        current_block = []
+                    final_event = event
+            final_content = _build_markdown()
+            self.agent_output(final_content)
+            return final_content, final_event
+
+        # Streaming mode: Live rendering
+        with Live(
+            _render_panel(""),
+            console=self.console,
+            refresh_per_second=20,
+            transient=False,
+            vertical_overflow="visible",
+        ) as live:
+            for event in stream:
+                if event["type"] == "token":
+                    current_block.append(event["content"])
+                    live.update(_render_panel(_build_markdown()))
+
+                elif event["type"] == "tool_call":
+                    tool_call_names.append(event.get("name", "tool"))
+                    # Show tool call indicator briefly
+                    content = _build_markdown() + f"\n\n🔧 *Calling `{event.get('name', 'tool')}`...*"
+                    live.update(_render_panel(content))
+
+                elif event["type"] == "done":
+                    if current_block:
+                        content_blocks.append("".join(current_block))
+                        current_block = []
+                        block_count += 1
+                    final_event = event
+                    live.update(_render_panel(_build_markdown()))
+
+        final_content = _build_markdown()
+        self._history.append({"role": "agent", "content": final_content, "streaming": True})
+        return final_content, final_event
+
+    # ═══════════════════════════════════════════════════════════
+    # Status bar
+    # ═══════════════════════════════════════════════════════════
+
+    def set_status(self, *, model: str = "", session: str = "", tokens: int = 0, cost: float = 0.0) -> None:
+        """Update status bar info."""
+        if model:
+            self._status_model = model
+        if session:
+            self._status_session = session
+        if tokens:
+            self._total_tokens = tokens
+        if cost:
+            self._total_cost = cost
+
+    def add_tokens(self, tokens: int, cost: float = 0.0) -> None:
+        """Increment token and cost counters."""
+        self._total_tokens += tokens
+        self._total_cost += cost
+
+    # ═══════════════════════════════════════════════════════════
+    # Token usage display
+    # ═══════════════════════════════════════════════════════════
+
+    def show_usage(self, usage: dict[str, Any]) -> None:
+        """Display token usage from a provider 'done' event."""
+        if not usage:
+            return
+        prompt = usage.get("prompt_tokens", 0)
+        completion = usage.get("completion_tokens", 0)
+        total = usage.get("total_tokens", prompt + completion)
+
+        parts = [f"[dim]📊 Tokens:[/] {total:,}"]
+        if prompt:
+            parts.append(f"[dim]in:[/] {prompt:,}")
+        if completion:
+            parts.append(f"[dim]out:[/] {completion:,}")
+
+        # Estimate cost
+        if total > 0:
+            # Rough estimates per 1K tokens (configurable later)
+            cost = (prompt * 1.5 + completion * 6.0) / 1_000_000  # ~GPT-4o pricing
+            self.add_tokens(total, cost)
+            parts.append(f"[dim]≈ ${cost:.4f}[/]")
+
+        self.console.print(Text("  ".join(parts)))
+        self.console.print()
+
+    # ═══════════════════════════════════════════════════════════
     # Display helpers
     # ═══════════════════════════════════════════════════════════
 
@@ -254,13 +438,15 @@ class KairosConsole:
         """Display available tools."""
         from kairos.tools.registry import get_all_tools
 
-        tools = tools or get_all_tools()
-        if not tools:
+        tool_dict = tools or get_all_tools()
+        tool_list = [(name, info.get("schema", {}).get("function", {})) for name, info in tool_dict.items()]
+
+        if not tool_list:
             self.info("No tools registered.")
             return
 
         table = Table(
-            title=f"Available Tools ({len(tools)})",
+            title=f"Available Tools ({len(tool_list)})",
             border_style=self.skin["info_color"],
             box=self.skin["box"],
         )
@@ -268,10 +454,11 @@ class KairosConsole:
         table.add_column("Description", style="dim")
         table.add_column("Params", style="dim")
 
-        for t in tools:
-            name = t.get("name", "?")
-            desc = (t.get("description", "") or "")[:60]
-            params = ", ".join(t.get("parameters", {}).keys())[:50]
+        for name, func in tool_list:
+            desc = (func.get("description", "") or "")[:60]
+            params = ", ".join(
+                func.get("parameters", {}).get("properties", {}).keys()
+            )[:50]
             table.add_row(name, desc, params)
 
         self.console.print(table)

@@ -1,7 +1,7 @@
 """CLI entry point for Kairos — Rich TUI, chat, cron, and config commands.
 
 Usage (Hermes-style):
-    kairos                    Interactive chat mode (default)
+    kairos                    Interactive chat mode (default) with live streaming
     kairos <query>            One-shot query (no 'run' needed)
     kairos chat               Explicit chat mode
     kairos run <query>        One-shot query (explicit)
@@ -71,27 +71,27 @@ def main():
 
 
 def _print_usage():
-    print("Kairos — The right tool, at the right moment.")
-    print()
-    print("Usage:")
-    print("  kairos                     Interactive chat mode (default)")
-    print("  kairos <query>             One-shot query")
-    print("  kairos chat                Explicit interactive chat")
-    print("  kairos run <query>         One-shot query (explicit)")
-    print("  kairos --resume <name>     Resume a saved session")
-    print("  kairos --list-sessions     List saved sessions")
-    print("  kairos cron                Cron scheduler management")
-    print("  kairos config init         Generate default config file")
-    print("  kairos skill list          List installed skills")
-    print("  kairos curator status      Show skill lifecycle status")
-    print("  kairos --version           Show version")
+    msg = """Kairos — The right tool, at the right moment.
+
+Usage:
+  kairos                     Interactive chat mode with live streaming
+  kairos <query>             One-shot query
+  kairos chat                Explicit interactive chat
+  kairos run <query>         One-shot query (explicit)
+  kairos --resume <name>     Resume a saved session
+  kairos --list-sessions     List saved sessions
+  kairos cron                Cron scheduler management
+  kairos config init         Generate default config file
+  kairos skill list          List installed skills
+  kairos curator status      Show skill lifecycle status
+  kairos --version           Show version"""
+    print(msg)
 
 
 def _list_sessions_cmd():
     """CLI: kairos --list-sessions"""
     from kairos.core.stateful_agent import StatefulAgent
     from kairos.providers.base import ModelConfig
-    from kairos.config import get_config
 
     api_key = _get_api_key()
     if not api_key:
@@ -125,9 +125,13 @@ def _get_api_key() -> str | None:
     )
 
 
+# ═══════════════════════════════════════════════════════════════
+# Chat mode — interactive loop with live streaming
+# ═══════════════════════════════════════════════════════════════
+
+
 def _chat_mode(args: list[str], resume: str | None = None):
-    """Interactive chat loop with Rich TUI."""
-    from kairos import Agent
+    """Interactive chat loop with Rich TUI and live streaming output."""
     from kairos.core.stateful_agent import StatefulAgent
     from kairos.providers.base import ModelConfig
     from kairos.security.permission import PermissionManager, PermissionAction, PermissionRequest
@@ -139,8 +143,10 @@ def _chat_mode(args: list[str], resume: str | None = None):
         console.error("No API key found. Set DEEPSEEK_API_KEY or run 'kairos config init'.")
         return
 
-    console = KairosConsole(skin="default", verbose=False)
+    console = KairosConsole(skin="default", verbose=False, stream=True)
     model = ModelConfig(api_key=api_key)
+    model_name = getattr(model, "model", "default")
+    console.set_status(model=model_name)
 
     # Permission manager with interactive prompt
     perm = PermissionManager()
@@ -160,8 +166,8 @@ def _chat_mode(args: list[str], resume: str | None = None):
             "  [green][a][/] Allow once   [yellow][y][/] Always allow   [red][n][/] Deny"
         )
         try:
-            choice = _perm_console.prompt("Permission", default="n")
-            key = choice.strip().lower()[:1]
+            choice = _perm_console.prompt("Permission")
+            key = choice.strip().lower()[:1] if choice else "n"
             return {"a": PermissionAction.ALLOW_ONCE, "y": PermissionAction.ALLOW_SESSION}.get(
                 key, PermissionAction.DENY)
         except (KeyboardInterrupt, EOFError):
@@ -170,7 +176,7 @@ def _chat_mode(args: list[str], resume: str | None = None):
     perm.set_prompt_callback(_prompt_user)
     sec_mw = SecurityMiddleware(permission_manager=perm)
 
-    # Use StatefulAgent for session persistence
+    # StatefulAgent for session persistence + streaming support
     agent = StatefulAgent(model=model, middlewares=[sec_mw])
 
     # Resume session if requested
@@ -187,6 +193,7 @@ def _chat_mode(args: list[str], resume: str | None = None):
     console.info(
         f"Kairos {__version__} — {session_count} saved session(s) — type /help for commands"
     )
+    console.info(f"Model: {model_name}  ·  Streaming: ON  ·  Ctrl+C to interrupt")
     console.console.print()
 
     while True:
@@ -204,38 +211,46 @@ def _chat_mode(args: list[str], resume: str | None = None):
             continue
 
         console.user_input(user_input)
-        console.spinner_start("Thinking...")
 
         try:
-            result = agent.run(user_input)
+            # ── Streaming mode: use chat_stream() ────────────
+            stream = agent.chat_stream(user_input)
+            final_content, final_event = console.stream_response(stream)
+
+            # Show verbose tool calls if enabled
+            if console.verbose and final_event and final_event.get("tool_calls"):
+                for tc in final_event["tool_calls"]:
+                    console.tool_call(
+                        name=tc.get("name", "?"),
+                        args=tc.get("args", tc.get("arguments", {})),
+                        result=tc.get("result", ""),
+                        duration_ms=tc.get("duration_ms", 0),
+                    )
+
+            # Show token usage
+            if final_event and final_event.get("usage"):
+                console.show_usage(final_event["usage"])
+
+        except KeyboardInterrupt:
+            console.console.print("\n[yellow]⏸️  Interrupted[/]")
+            if hasattr(agent, "interrupt"):
+                agent.interrupt()
+            continue
         except Exception as e:
-            console.spinner_stop()
             console.error(f"Agent error: {e}")
             continue
-
-        console.spinner_update("Formatting response...")
-        console.spinner_stop()
-
-        console.agent_output(
-            content=result.get("content", "(no response)"),
-            confidence=result.get("confidence"),
-        )
-
-        if console.verbose and result.get("evidence"):
-            for step in result["evidence"]:
-                console.tool_call(
-                    name=step.get("tool", "?"),
-                    args=step.get("args", {}),
-                    result=step.get("result", ""),
-                    duration_ms=step.get("duration_ms", 0),
-                )
 
         console.console.print()
 
 
+# ═══════════════════════════════════════════════════════════════
+# Run mode — one-shot query
+# ═══════════════════════════════════════════════════════════════
+
+
 def _run_mode(args: list[str]):
-    """Single query mode."""
-    from kairos import Agent
+    """Single query mode with streaming."""
+    from kairos.core.stateful_agent import StatefulAgent
     from kairos.providers.base import ModelConfig
 
     if not args:
@@ -251,20 +266,24 @@ def _run_mode(args: list[str]):
 
     query = " ".join(args)
     model = ModelConfig(api_key=api_key)
-    agent = Agent(model=model)
+    agent = StatefulAgent(model=model)
+    console = KairosConsole(stream=True)
 
-    console = KairosConsole(verbose=False)
-    console.spinner_start("Processing...")
     try:
-        result = agent.run(query)
-        console.spinner_stop()
-        console.agent_output(
-            content=result.get("content", ""),
-            confidence=result.get("confidence"),
-        )
+        stream = agent.chat_stream(query)
+        final_content, final_event = console.stream_response(stream)
+
+        if final_event and final_event.get("usage"):
+            console.show_usage(final_event["usage"])
+    except KeyboardInterrupt:
+        console.console.print("\n[yellow]⏸️  Interrupted[/]")
     except Exception as e:
-        console.spinner_stop()
         console.error(f"Error: {e}")
+
+
+# ═══════════════════════════════════════════════════════════════
+# Cron mode
+# ═══════════════════════════════════════════════════════════════
 
 
 def _cron_mode(args: list[str]):
@@ -323,6 +342,11 @@ def _cron_mode(args: list[str]):
         console.info("Usage: kairos cron [list|add|pause|resume|cancel|remove]")
 
 
+# ═══════════════════════════════════════════════════════════════
+# Config / Skill / Curator modes
+# ═══════════════════════════════════════════════════════════════
+
+
 def _config_mode(args: list[str]):
     """Config management."""
     from kairos.config import write_default_config, get_config
@@ -356,7 +380,8 @@ def _skill_mode(args: list[str]):
         if not skills:
             print("No skills installed. Use 'kairos skill install <source>' to add one.")
             return
-        print(f"Installed skills ({manager.stats()['active']} active, {manager.stats()['stale']} stale):\n")
+        stats = manager.stats()
+        print(f"Installed skills ({stats['active']} active, {stats['stale']} stale):\n")
         for entry in skills:
             icon = "●" if entry.status.value == "active" else "○" if entry.status.value == "stale" else "✕"
             print(f"  {icon} {entry.name}")
@@ -451,6 +476,11 @@ def _curator_mode(args: list[str]):
         print("Usage: kairos curator [status|clean|reindex]")
 
 
+# ═══════════════════════════════════════════════════════════════
+# Slash command handler
+# ═══════════════════════════════════════════════════════════════
+
+
 def _parse_field(field: str) -> list[int]:
     if field == "*":
         return []
@@ -511,6 +541,7 @@ def _handle_slash(console, cmd: str, agent, model_config):
     elif command == "/model":
         if len(parts) >= 2:
             model_config.model = parts[1]
+            console.set_status(model=parts[1])
             console.success(f"Model set to: {parts[1]}")
         else:
             console.info(f"Current model: {getattr(model_config, 'model', 'default')}")
@@ -520,6 +551,7 @@ def _handle_slash(console, cmd: str, agent, model_config):
             if hasattr(agent, "save_session"):
                 agent.save_session(parts[1])
                 console.success(f"Session saved as: {parts[1]}")
+                console.set_status(session=parts[1])
             else:
                 console.error("Current agent doesn't support session persistence.")
         else:
@@ -535,7 +567,9 @@ def _handle_slash(console, cmd: str, agent, model_config):
                 for s in sessions[:10]:
                     ts = time.strftime("%m-%d %H:%M", time.localtime(s.get("saved_at", 0)))
                     console.console.print(
-                        f"  ● [cyan]{s['name']}[/] ({s.get('message_count',0)} msgs, {s.get('turn_count',0)} turns, {ts})"
+                        f"  ● [cyan]{s['name']}[/] "
+                        f"({s.get('message_count',0)} msgs, "
+                        f"{s.get('turn_count',0)} turns, {ts})"
                     )
         else:
             console.error("Session listing not available.")
@@ -544,16 +578,12 @@ def _handle_slash(console, cmd: str, agent, model_config):
         if len(parts) >= 2:
             query = " ".join(parts[1:])
             console.user_input(query)
-            console.spinner_start("Thinking...")
             try:
-                result = agent.run(query)
-                console.spinner_stop()
-                console.agent_output(
-                    content=result.get("content", ""),
-                    confidence=result.get("confidence"),
-                )
+                stream = agent.chat_stream(query)
+                final_content, final_event = console.stream_response(stream)
+                if final_event and final_event.get("usage"):
+                    console.show_usage(final_event["usage"])
             except Exception as e:
-                console.spinner_stop()
                 console.error(f"Error: {e}")
         else:
             console.error("Usage: /run <query>")
@@ -564,7 +594,7 @@ def _handle_slash(console, cmd: str, agent, model_config):
         manager.scan()
         skills = manager.list_skills()
         if not skills:
-            console.info("No skills available. Use 'kairos skill install <source>' to add one.")
+            console.info("No skills available. Use 'kairos skill install <source>'.")
         else:
             for entry in skills:
                 icon = "●" if entry.status.value == "active" else "○" if entry.status.value == "stale" else "✕"
