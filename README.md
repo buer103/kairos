@@ -137,9 +137,16 @@ User Message → Gateway (11 platforms: Telegram, WeChat, Slack, ...)
 | **CLI** | Rich TUI (10 skins), tab completion, slash commands, streaming, setup wizard |
 | **Deploy** | Docker multi-stage build, docker-compose, HEALTHCHECK, graceful shutdown |
 
+## 📖 Documentation
+
+- **[API Reference](docs/api.md)** — full public API with code examples
+- [Architecture](docs/ARCHITECTURE.md) — module map, data flow, design rationale
+- [Deployment](docs/DEPLOYMENT.md) — Docker, docker-compose, CI/CD
+- [Windows](docs/windows-deployment.md) — pip, Docker, or source on Windows
+
 ## ✅ Status
 
-**Beta — v0.16.0. 1,300+ tests passing. 74 commits. CI green (Python 3.10/3.11/3.12 + Docker).**
+**Beta — v0.16.0. 1,390 tests passing. 91 commits. CI green (Python 3.10/3.11/3.12 + Docker).**
 
 - [x] Phase 1–4: Agent Loop, Prompt Engine, RAG, Knowledge, Evidence, Middleware, Memory, Skills, Sandbox
 - [x] Phase 5–8: Gateway (11 platforms), RL Training, Streaming, CredentialPool, Cron, Rich TUI, Config
@@ -154,5 +161,5 @@ User Message → Gateway (11 platforms: Telegram, WeChat, Slack, ...)
 ---
 
 <p align="center">
-  <sub>Built by <a href="https://github.com/buer103">buer103</a> · 74 commits · 1,300+ tests · v0.16.0</sub>
+  <sub>Built by <a href="https://github.com/buer103">buer103</a> · 91 commits · 1,390 tests · v0.16.0</sub>
 </p>
