@@ -139,34 +139,94 @@ curl http://localhost:8080/health
 ```
 
 
-## Option 3: Development Setup
+## Option 3: 源码安装（推荐开发用）
 
-For contributing to Kairos or customizing the source.
+从 GitHub clone 源码，可编辑安装，方便修改和调试。
+
+### 第一步：clone + 安装
 
 ```powershell
-# Clone and install in editable mode
+# 1. Clone 源码
 git clone https://github.com/buer103/kairos.git
 cd kairos
+
+# 2. 创建虚拟环境（推荐）
+python -m venv venv
+venv\Scripts\activate
+
+# 3. 可编辑安装（改了源码立即生效）
 pip install -e ".[dev]"
 
-# Run tests
-pytest tests/ -q
-
-# Verify
+# 4. 验证
 python -c "import kairos; print(kairos.__version__)"
-# 0.16.0
+# 输出: 0.16.0
 ```
 
-### IDE setup (VS Code)
+### 第二步：配置 API Key
+
+```powershell
+# 方式 A: 环境变量（最简单）
+$env:DEEPSEEK_API_KEY = "sk-your-key"
+
+# 方式 B: 写入配置文件
+$env:DEEPSEEK_API_KEY = "sk-your-key"
+kairos config init
+# 配置文件: C:\Users\<你>\.config\kairos\config.yaml
+```
+
+### 第三步：启动
+
+安装成功后，`kairos` 命令已注册到 PATH，有 **4 种启动方式**：
+
+```powershell
+# ── 方式 1: 交互式对话（最常用） ──
+kairos chat
+
+# ── 方式 2: 一次性查询 ──
+kairos "深圳今天天气怎么样"
+kairos run "解释一下 Kubernetes 调度器"
+
+# ── 方式 3: 启动 Gateway HTTP 服务 ──
+# 先装依赖: pip install kairos-agent[gateway]
+python -m kairos.gateway
+# 然后在浏览器打开 http://localhost:8080/health
+
+# ── 方式 4: 作为 Python 库嵌入你的代码 ──
+python -c "
+from kairos import Agent
+from kairos.providers.base import ModelConfig
+agent = Agent(model=ModelConfig(api_key='sk-...'))
+print(agent.run('Hello')['content'])
+"
+```
+
+### 第四步：跑通测试（确认环境正常）
+
+```powershell
+pytest tests/ -q
+# 1,300+ tests passed
+```
+
+### VS Code 配置
 
 ```json
 // .vscode/settings.json
 {
-    "python.defaultInterpreterPath": "${workspaceFolder}/kairos-env/Scripts/python.exe",
+    "python.defaultInterpreterPath": "${workspaceFolder}/venv/Scripts/python.exe",
     "python.testing.pytestEnabled": true,
     "python.testing.pytestArgs": ["tests/", "-q"]
 }
 ```
+
+### 源码安装的额外能力
+
+| 能力 | 命令 |
+|------|------|
+| 会话管理 | `kairos --list-sessions`，`kairos --resume <name>` |
+| Cron 定时任务 | `kairos cron list`，`kairos cron add <name> <cron>` |
+| 技能管理 | `kairos skill list`，`kairos skill install <url>` |
+| Curator 清理 | `kairos curator status`，`kairos curator clean` |
+| 查看版本 | `kairos --version` |
 
 ## Limitations on Windows
 
@@ -185,7 +245,7 @@ These features work but with caveats:
 | Use case | Recommended option |
 |----------|-------------------|
 | "I just want to try it" | Option 1 — `pip install` |
+| "I want to modify the source" | Option 3 — 源码安装 |
 | "I want to build a chatbot service" | Option 2 — Docker |
-| "I want to extend Kairos" | Option 3 — dev setup |
 | "I need to integrate with my FastAPI app" | Option 1 — `pip install kairos-agent` |
 | "I need cron jobs" | Option 2 — Docker (Unix inside container) |
