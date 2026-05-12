@@ -31,9 +31,7 @@ from rich.live import Live
 from rich.syntax import Syntax
 from rich.prompt import Prompt
 from rich.box import Box, ROUNDED, HEAVY, SIMPLE, MINIMAL
-from rich.layout import Layout
 from rich.align import Align
-from rich.columns import Columns
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -215,70 +213,32 @@ class KairosConsole:
         stream: Generator[dict, None, None],
         agent_name: str = "Kairos",
     ) -> tuple[str, dict | None]:
-        """Render streaming agent output live using Rich Live.
+        """Render streaming agent output token-by-token.
 
-        Handles multi-turn streaming (tool calls cause the agent loop
-        to make another LLM call — tokens from multiple turns are
-        rendered seamlessly).
-
-        Args:
-            stream: Generator yielding events: {type: "token"|"tool_call"|
-                    "tool_delta"|"done", ...}
-            agent_name: Label for the panel title.
+        Tokens are printed immediately with console.print(token, end="").
+        No Rich Live — avoids Windows terminal rendering bugs.
+        Tool calls insert separator lines. Final output wrapped in Panel.
 
         Returns:
-            (final_content, final_event) — the accumulated content and
-            the last "done" event dict (contains usage stats if available).
+            (final_content, final_event)
         """
         content_blocks: list[str] = []
         current_block: list[str] = []
         tool_call_names: list[str] = []
         final_event: dict | None = None
-        block_count = 0
 
-        def _build_markdown() -> str:
+        def _assemble() -> str:
             parts = []
             for i, block in enumerate(content_blocks):
-                if i > 0:
+                if i > 0 and i - 1 < len(tool_call_names):
                     parts.append(f"\n\n---\n*🔧 `{tool_call_names[i - 1]}`*\n")
                 parts.append(block)
             if current_block:
-                if len(content_blocks) > 0:
-                    parts.append(f"\n\n---\n*🔧 `{tool_call_names[-1]}`*\n" if tool_call_names else "")
                 parts.append("".join(current_block))
             return "".join(parts)
 
-        def _render_panel(content: str) -> Panel:
-            # Status bar line
-            status_parts = []
-            if self._status_model:
-                status_parts.append(f"[dim]model:[/] {self._status_model}")
-            if self._status_session:
-                status_parts.append(f"[dim]session:[/] {self._status_session}")
-            tokens_str = f"[dim]tokens:[/] {self._total_tokens:,}"
-            if self._total_cost > 0:
-                tokens_str += f" [dim]cost:[/] ${self._total_cost:.4f}"
-            status_parts.append(tokens_str)
-
-            status_bar = Align.center(
-                Text(" · ".join(status_parts), style="dim"),
-            )
-
-            md = Markdown(content, code_theme="monokai") if content.strip() else Text("")
-            body = Panel(
-                md,
-                title=Text(f"🤖 {agent_name}", style=self.skin["agent_color"]),
-                border_style=self.skin["agent_color"],
-                box=self.skin["box"],
-            )
-
-            full = Table.grid()
-            full.add_row(body)
-            full.add_row(status_bar)
-            return Panel(full, box=MINIMAL, padding=(0, 0))
-
         if not self.stream:
-            # Non-streaming fallback: collect all tokens, render once
+            # Non-streaming: collect, render once
             for event in stream:
                 if event["type"] == "token":
                     current_block.append(event["content"])
@@ -289,38 +249,53 @@ class KairosConsole:
                         content_blocks.append("".join(current_block))
                         current_block = []
                     final_event = event
-            final_content = _build_markdown()
+            final_content = _assemble()
             self.agent_output(final_content)
             return final_content, final_event
 
-        # Streaming mode: Live rendering
-        with Live(
-            _render_panel(""),
-            console=self.console,
-            refresh_per_second=20,
-            transient=False,
-            vertical_overflow="visible",
-        ) as live:
-            for event in stream:
-                if event["type"] == "token":
-                    current_block.append(event["content"])
-                    live.update(_render_panel(_build_markdown()))
+        # ── Streaming: print tokens directly, no Live ──────────
+        # Print panel header
+        self.console.print()
+        header = Panel(
+            Text(""),
+            title=Text(f"🤖 {agent_name}", style=self.skin["agent_color"]),
+            border_style=self.skin["agent_color"],
+            box=self.skin["box"],
+            padding=(0, 2),
+        )
+        self.console.print(header)
 
-                elif event["type"] == "tool_call":
-                    tool_call_names.append(event.get("name", "tool"))
-                    # Show tool call indicator briefly
-                    content = _build_markdown() + f"\n\n🔧 *Calling `{event.get('name', 'tool')}`...*"
-                    live.update(_render_panel(content))
+        first_token = True
+        for event in stream:
+            if event["type"] == "token":
+                token = event["content"]
+                current_block.append(token)
+                # Print token inline — no newline between tokens
+                self.console.print(token, end="", highlight=False)
+                first_token = False
 
-                elif event["type"] == "done":
-                    if current_block:
-                        content_blocks.append("".join(current_block))
-                        current_block = []
-                        block_count += 1
-                    final_event = event
-                    live.update(_render_panel(_build_markdown()))
+            elif event["type"] == "tool_call":
+                tool_call_names.append(event.get("name", "tool"))
+                if current_block:
+                    content_blocks.append("".join(current_block))
+                    current_block = []
+                self.console.print()
+                self.console.print(
+                    f"[yellow]🔧 Calling `{event.get('name', 'tool')}`...[/]"
+                )
 
-        final_content = _build_markdown()
+            elif event["type"] == "done":
+                if current_block:
+                    content_blocks.append("".join(current_block))
+                    current_block = []
+                final_event = event
+
+        self.console.print()
+        self.console.print()
+
+        final_content = _assemble()
+        # Render final markdown in a proper panel
+        self.agent_output(final_content)
         self._history.append({"role": "agent", "content": final_content, "streaming": True})
         return final_content, final_event
 
