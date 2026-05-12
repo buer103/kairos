@@ -164,14 +164,14 @@ def skill_view(name: str, file_path: str = "") -> dict[str, Any]:
 
 @register_tool(
     name="skill_manage",
-    description="Create, update, or delete skills. "
-    "Use 'create' to write a new skill, 'update' to modify existing, "
-    "'delete' to archive a skill. For delete, set absorbed_into to "
-    "forward consumers to a replacement skill.",
+    description="Create, update, patch, or delete skills. "
+    "Use 'create' to write a new skill, 'patch' for targeted edits to an existing skill, "
+    "'update' to replace full content, 'delete' to archive a skill. "
+    "For delete, set absorbed_into to forward consumers to a replacement skill.",
     parameters={
         "action": {
             "type": "string",
-            "description": "One of: create, update, delete",
+            "description": "One of: create, patch, update, delete",
         },
         "name": {
             "type": "string",
@@ -194,6 +194,18 @@ def skill_view(name: str, file_path: str = "") -> dict[str, Any]:
             "type": "string",
             "description": "For delete: name of the skill that replaces this one",
         },
+        "old_string": {
+            "type": "string",
+            "description": "For patch: exact text to find and replace in the skill (must be unique)",
+        },
+        "new_string": {
+            "type": "string",
+            "description": "For patch: replacement text",
+        },
+        "replace_all": {
+            "type": "boolean",
+            "description": "For patch: replace all occurrences (default: false)",
+        },
     },
 )
 def skill_manage(
@@ -203,8 +215,11 @@ def skill_manage(
     description: str = "",
     category: str = "",
     absorbed_into: str = "",
+    old_string: str = "",
+    new_string: str = "",
+    replace_all: bool = False,
 ) -> dict[str, Any]:
-    """Manage skills — create, update, delete."""
+    """Manage skills — create, patch, update, delete."""
     if _skill_manager is None:
         return {"success": False, "error": "Skill manager not initialized"}
 
@@ -224,6 +239,28 @@ def skill_manage(
             "name": name,
             "path": str(path),
             "message": f"Skill '{name}' created at {path}",
+        }
+
+    elif action == "patch":
+        if not old_string:
+            return {"success": False, "error": "old_string is required for patch"}
+        if not new_string and new_string != "":
+            return {"success": False, "error": "new_string is required for patch "
+                    "(use empty string to delete)"}
+        result = _skill_manager.patch(
+            name=name,
+            old_string=old_string,
+            new_string=new_string,
+            replace_all=replace_all,
+        )
+        if result is None:
+            return {"success": False, "error": f"Skill not found: {name}"}
+        if "error" in result:
+            return {"success": False, "error": result["error"]}
+        return {
+            "success": True,
+            "name": name,
+            "message": result.get("message", f"Skill '{name}' patched"),
         }
 
     elif action == "update":
@@ -254,4 +291,4 @@ def skill_manage(
         return {"success": True, "name": name, "message": msg}
 
     else:
-        return {"success": False, "error": f"Unknown action: {action}. Use create/update/delete."}
+        return {"success": False, "error": f"Unknown action: {action}. Use create/patch/update/delete."}

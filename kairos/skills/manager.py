@@ -154,6 +154,50 @@ class SkillManager:
         self._save_index()
         return entry.path
 
+    def patch(
+        self,
+        name: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ) -> dict[str, Any] | None:
+        """Targeted find-and-replace edit in a skill. Auto-backs up before modifying.
+
+        Returns a dict with 'message' on success, or None if skill not found,
+        or a dict with 'error' if old_string not found (or not unique when replace_all=False).
+        """
+        entry = self._index.get(name)
+        if not entry or not entry.path.exists():
+            return None
+
+        current = entry.path.read_text(encoding="utf-8")
+
+        if replace_all:
+            count = current.count(old_string)
+            if count == 0:
+                return {"error": f"old_string not found in skill '{name}'"}
+            new_content = current.replace(old_string, new_string)
+        else:
+            count = current.count(old_string)
+            if count == 0:
+                return {"error": f"old_string not found in skill '{name}'"}
+            if count > 1:
+                return {
+                    "error": f"old_string appears {count} times in '{name}'. "
+                    f"Use replace_all=true or provide more context to make it unique."
+                }
+            new_content = current.replace(old_string, new_string, 1)
+
+        self._backup(entry)
+        entry.path.write_text(new_content, encoding="utf-8")
+        entry.updated_at = time.time()
+        self._index[name] = entry
+        self._save_index()
+
+        return {
+            "message": f"Skill '{name}' patched ({count} occurrence{'s' if count > 1 else ''} replaced)",
+        }
+
     def delete(self, name: str, absorbed_into: str | None = None) -> bool:
         """Archive a skill. If absorbed_into is set, records the forwarding target.
 

@@ -71,7 +71,14 @@ You are {agent_name}, a diagnostic specialist built on Kairos.
 DEFAULT_SOUL = "You are a helpful, thoughtful AI assistant."
 DEFAULT_GUIDELINES = """- Be concise and accurate.
 - Use tools when needed; don't guess when you can verify.
-- If unsure, ask for clarification."""
+- If unsure, ask for clarification.
+- After completing a complex task (5+ tool calls), fixing a tricky error, or discovering a
+  non-trivial workflow, save the approach as a skill with skill_manage(action='create').
+- When using a skill and finding it outdated, incomplete, or wrong, patch it immediately
+  with skill_manage(action='patch') — don't wait to be asked. Skills that aren't
+  maintained become liabilities.
+- When the user corrects your approach or teaches you how to do something better, save
+  that knowledge as a skill so you don't make the same mistake again."""
 DEFAULT_RESPONSE_STYLE = "Respond in clear, well-structured language."
 
 
