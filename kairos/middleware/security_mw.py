@@ -191,15 +191,20 @@ class SecurityMiddleware(Middleware):
 
         # ASK: need interactive prompt
         try:
-            return asyncio.get_event_loop().run_until_complete(
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+        try:
+            return loop.run_until_complete(
                 asyncio.wait_for(
                     self._perm.request(request, timeout=self._perm_timeout),
                     timeout=self._perm_timeout,
                 )
             )
-        except (RuntimeError, asyncio.TimeoutError):
-            # No event loop running → auto-deny for safety
-            logger.warning("No event loop for permission prompt, auto-denying: %s", tool_name)
+        except asyncio.TimeoutError:
+            logger.warning("Permission prompt timeout for %s", tool_name)
             return False
 
     # ---- Deep validation helpers -----------------------------------------

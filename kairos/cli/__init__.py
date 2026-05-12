@@ -207,6 +207,63 @@ def _get_api_key() -> str | None:
 
 
 # ═══════════════════════════════════════════════════════════════
+# Permission prompt builder — Rich-based interactive approval
+# ═══════════════════════════════════════════════════════════════
+
+
+def _build_security_for_cli():
+    """Build SecurityMiddleware with Rich-based permission prompt for CLI usage.
+
+    Creates a synchronous prompt that uses Rich to ask the user for
+    confirmation before executing write/destructive tool calls.
+    Supports y/n/(s)ession-level grant.
+    """
+    import asyncio
+    from kairos.middleware.security_mw import SecurityMiddleware
+    from kairos.security.permission import PermissionAction, PermissionManager
+
+    pm = PermissionManager(auto_approve=False)
+
+    async def _rich_prompt(request):
+        from rich.prompt import Prompt
+        from rich.text import Text
+
+        summary = request.summary()
+        prompt_text = Text()
+        prompt_text.append("🔒 ", style="bold yellow")
+        prompt_text.append(summary, style="bold")
+        prompt_text.append("\n")
+        prompt_text.append("  [y]es  [n]o  [s]ession-grant  [?]", style="dim")
+
+        choice = Prompt.ask(
+            prompt_text,
+            choices=["y", "n", "s", "?"],
+            default="n",
+            show_choices=False,
+            show_default=False,
+        )
+
+        if choice == "?":
+            print(f"\n  Tool: {request.tool_name}")
+            if request.path:
+                print(f"  Path: {request.path}")
+            if request.description:
+                print(f"  Description: {request.description}")
+            # Re-ask
+            return await _rich_prompt(request)
+
+        if choice == "y":
+            return PermissionAction.ALLOW_ONCE
+        if choice == "s":
+            return PermissionAction.ALLOW_SESSION
+        return PermissionAction.DENY
+
+    pm.set_prompt_callback(_rich_prompt)
+
+    return SecurityMiddleware(permission_manager=pm)
+
+
+# ═══════════════════════════════════════════════════════════════
 # Chat mode — interactive loop with live streaming
 # ═══════════════════════════════════════════════════════════════
 
@@ -226,14 +283,13 @@ def _chat_mode(args: list[str], resume: str | None = None, base_url: str | None 
     display_model = getattr(model, "model", "default")
     console.set_status(model=f"{display_model} ({model.base_url})")
 
-    # Interactive chat mode: no SecurityMiddleware by default.
-    # The user IS the permission — they type commands directly.
-    # SecurityMiddleware is for Gateway/server multi-user scenarios.
-    # To enable it: use build_default(enable_security=True) or
-    # pass middlewares=[SecurityMiddleware(...)] manually.
+    # Interactive chat mode: SecurityMiddleware with Rich-based permission prompt.
+    # The user is asked y/n/session for each write/destructive tool call.
+    # /yolo toggles auto-approve for all tools.
+    _sec_mw = _build_security_for_cli()
 
     # StatefulAgent for session persistence + streaming support
-    agent = StatefulAgent(model=model)
+    agent = StatefulAgent(model=model, middlewares=[_sec_mw])
 
     # Register delegate_task tool so the agent can spawn sub-agents
     from kairos.agents.delegate import DelegationManager, register_delegate_tool
@@ -933,13 +989,13 @@ def _handle_slash(console, cmd: str, agent, model_config, last_input_ref=None, g
         new_state = console.toggle_yolo()
         if new_state:
             console.success(
-                "⚡ YOLO mode ON — dangerous command checks bypassed. "
+                "⚡ YOLO mode ON — all safety checks bypassed. "
                 "Use /yolo again to disable."
             )
-            # Bypass SandboxAudit middleware if present
+            # Bypass SandboxAudit and PermissionManager
             _set_yolo_on_middleware(agent, True)
         else:
-            console.info("🛡️  YOLO mode OFF — safety checks restored.")
+            console.info("🛡️  YOLO mode OFF — safety checks and permission prompts restored.")
             _set_yolo_on_middleware(agent, False)
 
     elif command == "/goal":
@@ -979,10 +1035,12 @@ def _handle_slash(console, cmd: str, agent, model_config, last_input_ref=None, g
 
 
 def _set_yolo_on_middleware(agent, enabled: bool) -> None:
-    """Set YOLO bypass on SandboxAudit middleware if present."""
-    for mw in getattr(agent, "pipeline", None) and agent.pipeline._middlewares or []:
+    """Set YOLO bypass on SandboxAudit middleware and PermissionManager if present."""
+    for mw in getattr(agent, "_middlewares", []):
         if hasattr(mw, "yolo_bypass"):
             mw.yolo_bypass = enabled
+        if hasattr(mw, "permission_manager"):
+            mw.permission_manager.set_auto_approve(enabled)
 
 
 def _handle_goal(console, parts: list[str], goal: dict) -> None:

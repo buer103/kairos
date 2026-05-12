@@ -498,6 +498,16 @@ class Agent:
         self._interrupted = False
         self._active_provider_index = 0
 
+        # ── Emit hook: AGENT_START ──
+        from kairos.hooks import HookPoint, get_hook_registry
+        get_hook_registry().emit(
+            HookPoint.AGENT_START,
+            agent=self,
+            user_message=user_message,
+            case_id=case.id,
+            thread_id=case.id,
+        )
+
         # Start trajectory + trace span
         self._start_trajectory(user_message)
         self._trace_events = []
@@ -613,6 +623,15 @@ class Agent:
                 assistant_msg["reasoning"] = reasoning
             messages.append(assistant_msg)
 
+            # ── Emit hook: AGENT_END ──
+            from kairos.hooks import HookPoint, get_hook_registry
+            get_hook_registry().emit(
+                HookPoint.AGENT_END,
+                agent=self,
+                iterations=iteration,
+                confidence=case.confidence if case else None,
+            )
+
             return {
                 "content": msg.content,
                 "confidence": case.confidence if case else None,
@@ -655,6 +674,16 @@ class Agent:
                 continue
 
             try:
+                # ── Emit hook: BEFORE_MODEL ──
+                from kairos.hooks import HookPoint, get_hook_registry
+                get_hook_registry().emit(
+                    HookPoint.BEFORE_MODEL,
+                    agent=self,
+                    messages_count=len(messages),
+                    iteration=iteration,
+                    provider=getattr(self._active_provider, "config", None),
+                )
+
                 result = self.pipeline.wrap_model_call(
                     messages,
                     lambda msgs, **kw: self._active_provider.chat(
@@ -666,11 +695,28 @@ class Agent:
                     self._release_credential(success=True)
                 # Auto-track usage
                 self._track_call_to_insights(result, success=True)
+
+                # ── Emit hook: AFTER_MODEL ──
+                get_hook_registry().emit(
+                    HookPoint.AFTER_MODEL,
+                    agent=self,
+                    iteration=iteration,
+                    has_tool_calls=bool(getattr(result.choices[0].message, "tool_calls", None)),
+                )
                 return result
             except Exception as e:
                 err = classify_error(e)
                 health.record_failure(err.kind)
                 last_error = e
+
+                # ── Emit hook: MODEL_ERROR ──
+                get_hook_registry().emit(
+                    HookPoint.MODEL_ERROR,
+                    agent=self,
+                    error=str(e)[:200],
+                    kind=err.kind.value,
+                    providers_tried=providers_tried,
+                )
 
                 if err.kind == ErrorKind.RATE_LIMIT:
                     # Try rotating credential within the same provider
@@ -817,6 +863,15 @@ class Agent:
                 })
 
             # Execute with grace-call retry
+            # ── Emit hook: BEFORE_TOOL ──
+            from kairos.hooks import HookPoint, get_hook_registry
+            get_hook_registry().emit(
+                HookPoint.BEFORE_TOOL,
+                agent=self,
+                tool_name=tool_name,
+                args=tool_args,
+            )
+
             result = self._grace_call(
                 tool_name=tool_name,
                 tool_args=tool_args,
@@ -830,6 +885,23 @@ class Agent:
                 state=state,
                 trace_ctx=trace_ctx,
             )
+
+            # ── Emit hook: AFTER_TOOL or TOOL_ERROR ──
+            if "error" in result:
+                get_hook_registry().emit(
+                    HookPoint.TOOL_ERROR,
+                    agent=self,
+                    tool_name=tool_name,
+                    error=result.get("error", ""),
+                    kind=result.get("kind", "unknown"),
+                )
+            else:
+                get_hook_registry().emit(
+                    HookPoint.AFTER_TOOL,
+                    agent=self,
+                    tool_name=tool_name,
+                    success=True,
+                )
 
             results.append(result)
 
