@@ -26,9 +26,32 @@ def main():
     """Main entry point."""
     args = sys.argv[1:]
 
-    # ── No args → interactive chat (Hermes-style) ────────────
+    # ── Extract --base-url and --model from anywhere in args ───
+    base_url: str | None = None
+    model_name: str | None = None
+    filtered: list[str] = []
+    i = 0
+    while i < len(args):
+        if args[i] == "--base-url" and i + 1 < len(args):
+            base_url = args[i + 1]
+            i += 2
+        elif args[i].startswith("--base-url="):
+            base_url = args[i].split("=", 1)[1]
+            i += 1
+        elif args[i] == "--model" and i + 1 < len(args):
+            model_name = args[i + 1]
+            i += 2
+        elif args[i].startswith("--model="):
+            model_name = args[i].split("=", 1)[1]
+            i += 1
+        else:
+            filtered.append(args[i])
+            i += 1
+    args = filtered
+
+    # ── No args → interactive chat ─────────────────────────────
     if not args:
-        _chat_mode([])
+        _chat_mode([], base_url=base_url, model_name=model_name)
         return
 
     # ── Flags ─────────────────────────────────────────────────
@@ -46,14 +69,14 @@ def main():
         return
 
     if args[0] == "--resume" and len(args) >= 2:
-        _chat_mode([], resume=args[1])
+        _chat_mode([], resume=args[1], base_url=base_url, model_name=model_name)
         return
 
     # ── Subcommands ───────────────────────────────────────────
     if args[0] == "chat":
-        _chat_mode(args[1:])
+        _chat_mode(args[1:], base_url=base_url, model_name=model_name)
     elif args[0] == "run":
-        _run_mode(args[1:])
+        _run_mode(args[1:], base_url=base_url, model_name=model_name)
     elif args[0] == "cron":
         _cron_mode(args[1:])
     elif args[0] == "config":
@@ -67,19 +90,30 @@ def main():
         _print_usage()
     else:
         # ── Bare query → one-shot run (Hermes-style) ──────────
-        _run_mode(args)
+        _run_mode(args, base_url=base_url, model_name=model_name)
 
 
 def _print_usage():
     msg = """Kairos — The right tool, at the right moment.
 
 Usage:
-  kairos                     Interactive chat mode with live streaming
-  kairos <query>             One-shot query
-  kairos chat                Explicit interactive chat
-  kairos run <query>         One-shot query (explicit)
-  kairos --resume <name>     Resume a saved session
-  kairos --list-sessions     List saved sessions
+  kairos [--base-url URL] [--model NAME]           Interactive chat mode
+  kairos [--base-url URL] [--model NAME] <query>   One-shot query
+  kairos chat  [--base-url URL] [--model NAME]     Explicit interactive chat
+  kairos run   [--base-url URL] [--model NAME] <q> One-shot query (explicit)
+  kairos --resume <name>                            Resume a saved session
+  kairos --list-sessions                            List saved sessions
+
+Provider flags:
+  --base-url URL      API endpoint (env: KAIROS_BASE_URL)
+  --model NAME        Model name (env: KAIROS_MODEL)
+
+Examples:
+  kairos                                                    # DeepSeek chat (default)
+  kairos --base-url http://localhost:8000/v1 --model qwen   # vLLM chat
+  kairos --model gpt-4o "Hello"                             # OpenAI one-shot
+
+Management:
   kairos cron                Cron scheduler management
   kairos config init         Generate default config file
   kairos skill list          List installed skills
@@ -113,13 +147,52 @@ def _list_sessions_cmd():
         print(f"    id={s.get('session_id','?')}  messages={msgs}  turns={turns}  saved={ts}")
 
 
+def _get_model_config(base_url: str | None = None, model_name: str | None = None) -> ModelConfig | None:
+    """Build ModelConfig from env vars, config file, and CLI flags.
+
+    Priority: CLI flags > env vars > config file > defaults
+    """
+    from kairos.config import get_config
+    config = get_config()
+
+    # API key
+    api_key = (
+        os.getenv("KAIROS_API_KEY")
+        or os.getenv("DEEPSEEK_API_KEY")
+        or os.getenv("OPENAI_API_KEY")
+        or config.get("providers.deepseek.api_key")
+        or config.get("providers.openai.api_key")
+    )
+    if not api_key:
+        return None
+
+    # Base URL
+    if not base_url:
+        base_url = (
+            os.getenv("KAIROS_BASE_URL")
+            or config.get("model.base_url")
+            or "https://api.deepseek.com"
+        )
+
+    # Model name
+    if not model_name:
+        model_name = (
+            os.getenv("KAIROS_MODEL")
+            or config.get("model.name")
+            or "deepseek-chat"
+        )
+
+    return ModelConfig(api_key=api_key, base_url=base_url, model=model_name)
+
+
 def _get_api_key() -> str | None:
-    """Get API key from env or config."""
+    """Get API key from env or config. (Deprecated — use _get_model_config)"""
     from kairos.config import get_config
     config = get_config()
     return (
         os.getenv("DEEPSEEK_API_KEY")
         or os.getenv("OPENAI_API_KEY")
+        or os.getenv("KAIROS_API_KEY")
         or config.get("providers.deepseek.api_key")
         or config.get("providers.openai.api_key")
     )
@@ -130,23 +203,22 @@ def _get_api_key() -> str | None:
 # ═══════════════════════════════════════════════════════════════
 
 
-def _chat_mode(args: list[str], resume: str | None = None):
+def _chat_mode(args: list[str], resume: str | None = None, base_url: str | None = None, model_name: str | None = None):
     """Interactive chat loop with Rich TUI and live streaming output."""
     from kairos.core.stateful_agent import StatefulAgent
     from kairos.providers.base import ModelConfig
     from kairos.security.permission import PermissionManager, PermissionAction, PermissionRequest
     from kairos.middleware.security_mw import SecurityMiddleware
 
-    api_key = _get_api_key()
-    if not api_key:
+    model = _get_model_config(base_url=base_url, model_name=model_name)
+    if not model:
         console = KairosConsole()
-        console.error("No API key found. Set DEEPSEEK_API_KEY or run 'kairos config init'.")
+        console.error("No API key found. Set KAIROS_API_KEY or run 'kairos config init'.")
         return
 
     console = KairosConsole(skin="default", verbose=False, stream=True)
-    model = ModelConfig(api_key=api_key)
-    model_name = getattr(model, "model", "default")
-    console.set_status(model=model_name)
+    display_model = getattr(model, "model", "default")
+    console.set_status(model=f"{display_model} ({model.base_url})")
 
     # Permission manager with interactive prompt
     perm = PermissionManager()
@@ -193,7 +265,7 @@ def _chat_mode(args: list[str], resume: str | None = None):
     console.info(
         f"Kairos {__version__} — {session_count} saved session(s) — type /help for commands"
     )
-    console.info(f"Model: {model_name}  ·  Streaming: ON  ·  Ctrl+C to interrupt")
+    console.info(f"Model: {display_model} @ {model.base_url}  ·  Streaming: ON")
     console.console.print()
 
     while True:
@@ -248,7 +320,7 @@ def _chat_mode(args: list[str], resume: str | None = None):
 # ═══════════════════════════════════════════════════════════════
 
 
-def _run_mode(args: list[str]):
+def _run_mode(args: list[str], base_url: str | None = None, model_name: str | None = None):
     """Single query mode with streaming."""
     from kairos.core.stateful_agent import StatefulAgent
     from kairos.providers.base import ModelConfig
@@ -258,14 +330,13 @@ def _run_mode(args: list[str]):
         console.error("Usage: kairos run <query>")
         return
 
-    api_key = _get_api_key()
-    if not api_key:
+    model = _get_model_config(base_url=base_url, model_name=model_name)
+    if not model:
         console = KairosConsole()
-        console.error("No API key found.")
+        console.error("No API key found. Set KAIROS_API_KEY or DEEPSEEK_API_KEY.")
         return
 
     query = " ".join(args)
-    model = ModelConfig(api_key=api_key)
     agent = StatefulAgent(model=model)
     console = KairosConsole(stream=True)
 
