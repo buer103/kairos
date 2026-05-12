@@ -130,9 +130,10 @@ User Message → Gateway (11 platforms: Telegram, WeChat, Slack, ...)
 | **Memory** | 3-tier (Profile/Timeline/Facts), confidence≥0.7 filter, per-agent isolation, FTS5 search |
 | **Gateway** | 11 platform adapters (Telegram, WeChat, Slack, Discord, Feishu, WhatsApp, Signal, Line, Matrix, IRC, CLI) |
 | **Skills** | Curator lifecycle (active→stale→archived), Marketplace (GitHub/HF/URL/local), Self-improvement |
-| **Security** | 3-level Permissions, SandboxAudit (dangerous command blocking), Guardrails, URL/File safety |
+| **Security** | 3-level Permissions (BLOCK/ASK/TRUST), SandboxAudit, Guardrails, URL/File safety, Interactive CLI prompt (y/n/session) |
 | **Observability** | ErrorClassifier, UsageTracker, AgentInsights, Prometheus /metrics endpoint |
-| **Delegation** | Sub-agent spawning (ThreadPoolExecutor), Orchestrator, Policy (whitelist/blacklist) |
+| **Hooks** | 24 lifecycle hook points, pub/sub registry, priority ordering, thread-safe, error-isolated |
+| **Delegation** | Sub-agent spawning (ThreadPoolExecutor), Orchestrator, CancelEvent, Policy (whitelist/blacklist) |
 | **Training** | Trajectory recorder (ShareGPT JSONL), RL environment, 4 reward functions |
 | **CLI** | Rich TUI (10 skins), tab completion, slash commands, streaming, setup wizard |
 | **Deploy** | Docker multi-stage build, docker-compose, HEALTHCHECK, graceful shutdown |
@@ -146,20 +147,21 @@ User Message → Gateway (11 platforms: Telegram, WeChat, Slack, ...)
 
 ## ✅ Status
 
-**Beta — v0.16.0. 1,390 tests passing. 91 commits. CI green (Python 3.10/3.11/3.12 + Docker).**
+**Beta — v0.16.0. 1,559 tests passing. 98 commits. CI green (Python 3.10/3.11/3.12 + Docker).**
 
 - [x] Phase 1–4: Agent Loop, Prompt Engine, RAG, Knowledge, Evidence, Middleware, Memory, Skills, Sandbox
 - [x] Phase 5–8: Gateway (11 platforms), RL Training, Streaming, CredentialPool, Cron, Rich TUI, Config
 - [x] Phase 9–12: Security, Observability, Sub-agent Orchestrator, Browser/MCP/Vision tools, Docker
 - [x] Phase 13–14: Trace ID, Tiered Memory, Provider Registry, Parallel tools, Failover, Batch runner, Skill improver, Prompt caching, Sub-agent policy
+- [x] Phase 15 (P1 depth): Hook system (24 hooks), Grace call retry, CancelEvent, Interactive permissions (yolo/ask/deny), VectorMemory, Web UI multi-session
 
 ### Roadmap
 
-- [ ] Phase 15: ACP IDE integration, Interactive permissions, Documentation site, Tutorials
-- [ ] Phase 16: v1.0 release
+- [ ] Phase 16: ACP IDE integration, Context Engine plugin, Sandbox warm pool, OTEL export
+- [ ] Phase 17: v1.0 release, Documentation site, Tutorials
 
 ---
 
 <p align="center">
-  <sub>Built by <a href="https://github.com/buer103">buer103</a> · 91 commits · 1,390 tests · v0.16.0</sub>
+  <sub>Built by <a href="https://github.com/buer103">buer103</a> · 98 commits · 1,559 tests · v0.16.0</sub>
 </p>
