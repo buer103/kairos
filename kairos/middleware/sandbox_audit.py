@@ -219,9 +219,14 @@ class SandboxAuditMiddleware(Middleware):
         self._block_high = block_high
         self._warn_medium = warn_medium
         self._max_command_length = max_command_length
+        self.yolo_bypass: bool = False  # /yolo — skip all checks
 
     def wrap_tool_call(self, tool_name: str, args: dict, handler, **kwargs) -> Any:
         if tool_name not in self._audit_tools:
+            return handler(tool_name, args, **kwargs)
+
+        # YOLO mode — pass everything through
+        if self.yolo_bypass:
             return handler(tool_name, args, **kwargs)
 
         command = args.get("command", "")

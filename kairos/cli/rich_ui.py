@@ -106,6 +106,9 @@ class KairosConsole:
         self._total_tokens: int = 0
         self._total_cost: float = 0.0
 
+        # Safety / UX toggles
+        self._yolo_mode: bool = False  # /yolo — skip dangerous command checks
+
     # ═══════════════════════════════════════════════════════════
     # Output helpers
     # ═══════════════════════════════════════════════════════════
@@ -417,6 +420,11 @@ class KairosConsole:
             ("/help", "Show this help"),
             ("/history", "Show conversation history summary"),
             ("/clear", "Clear conversation history"),
+            ("/retry", "Resend the last message (after timeout/error)"),
+            ("/undo", "Undo the last exchange (user message + agent reply)"),
+            ("/background <prompt>", "Run a prompt in the background (non-blocking)"),
+            ("/yolo", "Toggle YOLO mode — bypass dangerous command checks"),
+            ("/edit", "Open multi-line editor for code/long text input"),
             ("/model <name>", "Switch model (e.g., /model gpt-4)"),
             ("/skin <name>", "Switch skin (default/hacker/retro/minimal)"),
             ("/tools", "List available tools"),
@@ -531,8 +539,50 @@ class KairosConsole:
     # ═══════════════════════════════════════════════════════════
 
     def prompt(self, prompt_text: str = "> ") -> str:
-        """Prompt for user input with Rich styling."""
-        return Prompt.ask(f"[{self.skin['user_color']}]{prompt_text}[/]")
+        """Prompt for user input with Rich styling.
+        
+        When in YOLO mode, the prompt includes a ⚡ indicator.
+        Multi-line paste is auto-detected: if the pasted text contains
+        newlines, it's captured as-is.
+        """
+        style = self.skin['user_color']
+        if self._yolo_mode:
+            style = "bright_yellow"
+            prompt_text = f"⚡ {prompt_text}"
+        return Prompt.ask(f"[{style}]{prompt_text}[/]")
+
+    def multiline_prompt(self, prompt_text: str = "edit") -> str:
+        """Capture multi-line input. 
+        
+        Prints instructions, then reads lines until '.' on its own line.
+        Supports Ctrl+D to finish. Returns joined content.
+        """
+        info_color = self.skin.get("info_color", "blue")
+        self.console.print(
+            f"[{info_color}]📝 Multi-line mode. Type '.' on its own line to finish, Ctrl+D to cancel.[/]"
+        )
+        lines: list[str] = []
+        try:
+            while True:
+                line_num = len(lines) + 1
+                line = input(f"[{self.skin['user_color']}]{prompt_text}:{line_num:03d}[/] ")
+                if line.strip() == ".":
+                    break
+                lines.append(line)
+        except (EOFError, KeyboardInterrupt):
+            if not lines:
+                return ""
+            # User pressed Ctrl+D — accept what we have
+        return "\n".join(lines)
+
+    @property
+    def yolo_mode(self) -> bool:
+        return self._yolo_mode
+
+    def toggle_yolo(self) -> bool:
+        """Toggle YOLO mode. Returns new state."""
+        self._yolo_mode = not self._yolo_mode
+        return self._yolo_mode
 
     def set_skin(self, name: str) -> bool:
         """Switch to a different skin."""

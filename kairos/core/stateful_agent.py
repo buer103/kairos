@@ -129,6 +129,27 @@ class StatefulAgent(Agent):
         """Delete a saved session from the backend."""
         return self._backend.delete(name)
 
+    def pop_last_exchange(self) -> int:
+        """Remove the last user+assistant exchange from state. Returns count removed."""
+        if self._state is None:
+            return 0
+        msgs = self._state.messages
+        removed = 0
+        # Pop from end: assistant response, then tool results, then user message
+        while msgs:
+            last = msgs[-1]
+            role = last.get("role", "")
+            if role in ("user", "assistant", "tool"):
+                msgs.pop()
+                removed += 1
+                if role == "user":
+                    break
+            else:
+                break  # stop at system message or unknown
+        if removed:
+            self._turn_count = max(0, self._turn_count - 1)
+        return removed
+
     # ── Internal ─────────────────────────────────────────────────
 
     def _pack_session(self, name: str) -> dict[str, Any]:

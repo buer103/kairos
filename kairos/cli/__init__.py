@@ -85,6 +85,8 @@ def main():
         _skill_mode(args[1:])
     elif args[0] == "curator":
         _curator_mode(args[1:])
+    elif args[0] == "doctor":
+        _doctor_mode()
     elif args[0].startswith("-"):
         print(f"Unknown flag: {args[0]}")
         _print_usage()
@@ -237,6 +239,9 @@ def _chat_mode(args: list[str], resume: str | None = None, base_url: str | None 
     # Skill manager for skill_manage/skill_view/skills_list tools
     # (already wired via set_skill_manager in loop.py — kept for clarity)
 
+    # Session state
+    _last_input: list[str] = [""]  # for /retry (mutable for closure capture)
+
     # Resume session if requested
     if resume:
         if agent.load_session(resume):
@@ -272,9 +277,10 @@ def _chat_mode(args: list[str], resume: str | None = None, base_url: str | None 
             continue
 
         if user_input.startswith("/"):
-            _handle_slash(console, user_input, agent, model)
+            _handle_slash(console, user_input, agent, model, _last_input_ref)
             continue
 
+        _last_input_ref[0] = user_input  # save for /retry
         console.user_input(user_input)
 
         try:
@@ -439,9 +445,57 @@ def _config_mode(args: list[str]):
             console.info(f"Config: {cfg.path}")
         else:
             console.info("No config file found. Run 'kairos config init' to create one.")
+    elif args[0] == "migrate":
+        _migrate_config()
     else:
         console.error(f"Unknown config command: {args[0]}")
-        console.info("Usage: kairos config [init|show]")
+        console.info("Usage: kairos config [init|show|migrate]")
+
+
+def _migrate_config():
+    """Upgrade old config files with new defaults."""
+    import yaml
+    from pathlib import Path
+
+    config_path = Path(os.path.expanduser("~/.config/kairos/config.yaml"))
+    if not config_path.exists():
+        print("No config file found. Run 'kairos config init' first.")
+        return
+
+    current = yaml.safe_load(config_path.read_text()) or {}
+
+    # Default values that may be missing in older configs
+    defaults = {
+        "agent": {"max_turns": 90, "tool_use_enforcement": True},
+        "compression": {"enabled": True, "threshold": 0.5, "target_ratio": 0.2},
+        "display": {"skin": "default", "tool_progress": True},
+        "delegation": {"max_concurrent_children": 3, "max_iterations": 50},
+        "security": {"sandbox_audit": True, "block_high_risk": True},
+        "memory": {"max_injection_tokens": 2000},
+    }
+
+    added = 0
+    for section, values in defaults.items():
+        if section not in current:
+            current[section] = values
+            added += len(values)
+            print(f"  + Added [{section}] section")
+        elif isinstance(values, dict) and isinstance(current[section], dict):
+            for key, val in values.items():
+                if key not in current[section]:
+                    current[section][key] = val
+                    added += 1
+                    print(f"  + Added {section}.{key} = {val}")
+
+    if added:
+        # Backup old config
+        backup_path = config_path.with_suffix(".yaml.bak")
+        import shutil
+        shutil.copy2(config_path, backup_path)
+        config_path.write_text(yaml.dump(current, default_flow_style=False, allow_unicode=True))
+        print(f"\n✅ Migrated {added} new keys. Backup saved to {backup_path}")
+    else:
+        print("✅ Config is up to date. Nothing to migrate.")
 
 
 def _skill_mode(args: list[str]):
@@ -555,6 +609,78 @@ def _curator_mode(args: list[str]):
 
 
 # ═══════════════════════════════════════════════════════════════
+# Doctor — health check
+# ═══════════════════════════════════════════════════════════════
+
+
+def _doctor_mode():
+    """Run a health check on the Kairos installation."""
+    import importlib
+    from pathlib import Path
+    from kairos import __version__
+
+    results: list[tuple[str, bool, str]] = []
+
+    def check(name: str, ok: bool, detail: str = ""):
+        results.append((name, ok, detail))
+
+    # 1. Python version
+    py_ver = sys.version_info
+    check("Python 3.10+", py_ver >= (3, 10), f"{py_ver.major}.{py_ver.minor}.{py_ver.micro}")
+
+    # 2. Config file
+    config_path = Path(os.path.expanduser("~/.config/kairos/config.yaml"))
+    config_ok = config_path.exists()
+    check("Config file", config_ok, str(config_path) if config_ok else "Not found")
+
+    # 3. API key
+    api_key = os.getenv("KAIROS_API_KEY") or os.getenv("DEEPSEEK_API_KEY")
+    check("API key", bool(api_key), "Set" if api_key else "Missing — set KAIROS_API_KEY or DEEPSEEK_API_KEY")
+
+    # 4. Skills directory
+    skills_dir = Path(os.path.expanduser("~/.kairos/skills"))
+    check("Skills directory", skills_dir.exists(), str(skills_dir))
+
+    # 5. Core dependencies
+    for pkg in ("openai", "rich", "pydantic", "aiohttp"):
+        try:
+            importlib.import_module(pkg)
+            check(f"Dependency: {pkg}", True, "Installed")
+        except ImportError:
+            check(f"Dependency: {pkg}", False, "Not installed — pip install")
+
+    # 6. Model reachability (quick test — only if API key set)
+    if api_key:
+        try:
+            from kairos.providers.base import ModelConfig, ModelProvider
+            base = os.getenv("KAIROS_BASE_URL", "https://api.deepseek.com/v1")
+            model = os.getenv("KAIROS_MODEL", "deepseek-chat")
+            provider = ModelProvider(ModelConfig(api_key=api_key, base_url=base, model=model))
+            test_result = provider.chat([{"role": "user", "content": "ping"}], max_tokens=5)
+            ok = "error" not in str(test_result).lower()[:100]
+            check("Model reachable", ok, f"{model} @ {base}" if ok else "Connection failed")
+        except Exception as e:
+            check("Model reachable", False, str(e)[:80])
+
+    # Print report
+    print(f"\n🩺 Kairos Doctor — v{__version__}\n{'=' * 50}")
+    all_ok = True
+    for name, ok, detail in results:
+        icon = "✅" if ok else "❌"
+        if not ok:
+            all_ok = False
+        detail_str = f" — {detail}" if detail else ""
+        print(f"  {icon} {name}{detail_str}")
+
+    print()
+    if all_ok:
+        print("✨ All checks passed. Kairos is healthy!")
+    else:
+        print("⚠️  Some checks failed. Review the ❌ items above.")
+    print()
+
+
+# ═══════════════════════════════════════════════════════════════
 # Slash command handler
 # ═══════════════════════════════════════════════════════════════
 
@@ -576,7 +702,7 @@ def _parse_field(field: str) -> list[int]:
     return values
 
 
-def _handle_slash(console, cmd: str, agent, model_config):
+def _handle_slash(console, cmd: str, agent, model_config, last_input_ref: list[str] = None):
     """Handle slash commands in chat mode."""
     parts = cmd.strip().split()
     command = parts[0].lower()
@@ -594,6 +720,44 @@ def _handle_slash(console, cmd: str, agent, model_config):
     elif command == "/clear":
         console._history.clear()
         console.success("Conversation history cleared.")
+
+    elif command == "/retry":
+        last = (last_input_ref or [""])[0]
+        if not last:
+            console.error("Nothing to retry. Send a message first.")
+            return
+        console.info(f"Retrying: {last[:80]}{'...' if len(last) > 80 else ''}")
+        console.user_input(last)
+        try:
+            stream = agent.chat_stream(last)
+            final_content, final_event = console.stream_response(stream)
+            if final_event and final_event.get("usage"):
+                console.show_usage(final_event["usage"])
+        except Exception as e:
+            console.error(f"Error: {e}")
+
+    elif command == "/undo":
+        # Remove last exchange from console history
+        removed = 0
+        while console._history:
+            entry = console._history[-1]
+            if entry.get("role") in ("user", "agent"):
+                console._history.pop()
+                removed += 1
+                if entry.get("role") == "user":
+                    break
+            else:
+                console._history.pop()
+                removed += 1
+        if removed:
+            console.success(f"Undid last exchange ({removed} messages removed).")
+            # Tell agent to pop last exchange
+            if hasattr(agent, "pop_last_exchange"):
+                agent.pop_last_exchange()
+            if last_input_ref:
+                last_input_ref[0] = ""  # clear retry target
+        else:
+            console.info("Nothing to undo.")
 
     elif command == "/verbose":
         console.verbose = not console.verbose
@@ -684,8 +848,82 @@ def _handle_slash(console, cmd: str, agent, model_config):
     elif command == "/perm":
         _handle_perm_slash(console, parts, agent)
 
+    elif command == "/yolo":
+        new_state = console.toggle_yolo()
+        if new_state:
+            console.success(
+                "⚡ YOLO mode ON — dangerous command checks bypassed. "
+                "Use /yolo again to disable."
+            )
+            # Bypass SandboxAudit middleware if present
+            _set_yolo_on_middleware(agent, True)
+        else:
+            console.info("🛡️  YOLO mode OFF — safety checks restored.")
+            _set_yolo_on_middleware(agent, False)
+
+    elif command == "/background":
+        if len(parts) < 2:
+            console.error("Usage: /background <prompt>")
+            return
+        prompt = " ".join(parts[1:])
+        _run_background(console, agent, prompt)
+
+    elif command == "/edit":
+        content = console.multiline_prompt("edit")
+        if not content.strip():
+            console.info("Cancelled.")
+            return
+        console.user_input(content)
+        try:
+            stream = agent.chat_stream(content)
+            final_content, final_event = console.stream_response(stream)
+            if final_event and final_event.get("usage"):
+                console.show_usage(final_event["usage"])
+        except Exception as e:
+            console.error(f"Error: {e}")
+
     else:
         console.error(f"Unknown command: {command}. Type /help for available commands.")
+
+
+def _set_yolo_on_middleware(agent, enabled: bool) -> None:
+    """Set YOLO bypass on SandboxAudit middleware if present."""
+    for mw in getattr(agent, "pipeline", None) and agent.pipeline._middlewares or []:
+        if hasattr(mw, "yolo_bypass"):
+            mw.yolo_bypass = enabled
+
+
+_BG_TASKS: dict[int, dict] = {}  # task_id -> {prompt, thread, done}
+
+
+def _run_background(console, agent, prompt: str) -> None:
+    """Run a prompt in a background thread. Notifies when done."""
+    import threading
+
+    task_id = len(_BG_TASKS) + 1
+    console.info(f"📋 Background task #{task_id} started: {prompt[:60]}...")
+
+    def worker():
+        try:
+            result = agent.chat(prompt)
+            content = result.get("content", str(result))
+            _BG_TASKS[task_id]["done"] = True
+            _BG_TASKS[task_id]["result"] = content
+            # Print notification
+            preview = content[:200].replace("\n", " ")
+            console.console.print(
+                f"\n[bold green]✅ BG #{task_id} done:[/] {preview}..."
+                if len(content) > 200 else
+                f"\n[bold green]✅ BG #{task_id} done:[/] {preview}"
+            )
+        except Exception as e:
+            _BG_TASKS[task_id]["done"] = True
+            _BG_TASKS[task_id]["error"] = str(e)
+            console.console.print(f"\n[bold red]❌ BG #{task_id} failed:[/] {e}")
+
+    thread = threading.Thread(target=worker, daemon=True)
+    _BG_TASKS[task_id] = {"prompt": prompt, "thread": thread, "done": False}
+    thread.start()
 
 
 def _handle_perm_slash(console, parts: list[str], agent):
