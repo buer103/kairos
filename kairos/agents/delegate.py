@@ -132,6 +132,7 @@ class DelegateConfig:
     """Configuration for the delegation system."""
 
     max_concurrent: int = 3
+    max_tasks: int = 3       # Hard cap — reject batches larger than this
     default_timeout: float = 180.0
     max_retries: int = 1
     verbose: bool = False
@@ -181,6 +182,14 @@ class DelegationManager:
         """Delegate multiple tasks in parallel (up to max_concurrent)."""
         if not tasks:
             return []
+
+        # Hard cap enforcement
+        if len(tasks) > self.config.max_tasks:
+            return [DelegateResult(
+                task_id=tasks[i].id if i < len(tasks) else f"overflow_{i}",
+                success=False,
+                error=f"Too many tasks: {len(tasks)} requested, max {self.config.max_tasks}",
+            ) for i in range(len(tasks))]
 
         max_workers = min(len(tasks), self.config.max_concurrent)
         results: list[DelegateResult] = []
@@ -311,7 +320,12 @@ def register_delegate_tool(delegation_manager: DelegationManager) -> None:
         timeout = min(max(timeout, 10), 600)
 
         if tasks:
-            # Batch mode
+            # Batch mode — enforce hard cap
+            if len(tasks) > delegation_manager.config.max_tasks:
+                return {
+                    "error": f"Too many tasks: {len(tasks)} requested, max {delegation_manager.config.max_tasks}",
+                    "results": [],
+                }
             batch: list[DelegateTask] = []
             for t in tasks:
                 batch.append(DelegateTask(
