@@ -13,11 +13,14 @@ Layer ordering follows DeerFlow dependency chain + Kairos additions:
   9. EvidenceTracker    — evidence chain (Kairos)
  10. ToolArgRepair      — repair broken JSON args (Kairos)
  11. ConfidenceScorer   — output quality (Kairos)
- 12. LLMRetry           — retry with credential rotation (Kairos)
- 13. SubagentLimit      — cap concurrent sub-agents
- 14. Title              — auto-generate title
- 15. MemoryMiddleware   — submit to memory queue
- 16. Clarification      — intercept ask_user (MUST be last)
+  12. LLMRetry           — retry with credential rotation (Kairos)
+ 13. SandboxAudit       — block dangerous terminal commands
+ 14. LoopDetection      — detect infinite tool call loops
+ 15. TokenUsage         — per-message token attribution
+ 16. SubagentLimit      — cap concurrent sub-agents
+ 17. Title              — auto-generate title
+ 18. MemoryMiddleware   — submit to memory queue
+ 19. Clarification      — intercept ask_user (MUST be last)
 
 Optional plug-ins:
   - SandboxMiddleware   — route tools to container (before tool execution)
@@ -42,6 +45,9 @@ from kairos.middleware.llm_retry import LLMRetryMiddleware, ToolArgRepairMiddlew
 from kairos.middleware.logging_mw import LoggingMiddleware
 from kairos.middleware.sandbox_mw import SandboxMiddleware
 from kairos.middleware.security_mw import SecurityMiddleware
+from kairos.middleware.sandbox_audit import SandboxAuditMiddleware
+from kairos.middleware.loop_detection import LoopDetectionMiddleware
+from kairos.middleware.token_usage import TokenUsageMiddleware
 
 # Re-export MemoryMiddleware from memory package
 from kairos.memory.middleware import MemoryMiddleware
@@ -71,5 +77,8 @@ __all__ = [
     "LoggingMiddleware",
     "SandboxMiddleware",
     "SecurityMiddleware",
+    "SandboxAuditMiddleware",
+    "LoopDetectionMiddleware",
+    "TokenUsageMiddleware",
     "MemoryMiddleware",
 ]

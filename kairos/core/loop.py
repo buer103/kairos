@@ -238,7 +238,7 @@ class Agent:
         enable_insights: bool = False,
         **template_vars,
     ) -> Agent:
-        """Build an Agent with full 17-layer pipeline."""
+        """Build an Agent with full 20-layer pipeline."""
         from kairos.middleware import (
             ThreadDataMiddleware,
             UploadsMiddleware,
@@ -256,6 +256,9 @@ class Agent:
             LLMRetryMiddleware,
             ToolArgRepairMiddleware,
             SecurityMiddleware,
+            SandboxAuditMiddleware,
+            LoopDetectionMiddleware,
+            TokenUsageMiddleware,
         )
         from kairos.providers.credential import CredentialPool, RetryConfig
 
@@ -274,6 +277,7 @@ class Agent:
         if supports_vision:
             layers.append(ViewImageMiddleware(supports_vision=True))
         layers.extend([EvidenceTracker(), ToolArgRepairMiddleware()])
+        layers.append(SandboxAuditMiddleware())
         if enable_security:
             layers.append(SecurityMiddleware(
                 allowed_paths=security_allowed_paths,
@@ -288,7 +292,8 @@ class Agent:
                     retry_config=retry_config or RetryConfig(),
                 )
             )
-        layers.extend([SubagentLimitMiddleware(), TitleMiddleware()])
+        layers.append(LoopDetectionMiddleware())
+        layers.extend([SubagentLimitMiddleware(), TokenUsageMiddleware(), TitleMiddleware()])
         layers.append(ClarificationMiddleware())
 
         return cls(
