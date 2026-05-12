@@ -234,6 +234,18 @@ def _chat_mode(args: list[str], resume: str | None = None, base_url: str | None 
     dm = DelegationManager(model=ModelProvider(model), config=None)
     register_delegate_tool(dm)
 
+    # Skill self-improvement — detects patterns and auto-creates skills
+    from kairos.skills.manager import SkillManager
+    from kairos.skills.improver import SkillImprover
+    skill_mgr = SkillManager()
+    skill_improver = SkillImprover(
+        skill_manager=skill_mgr,
+        model_provider=ModelProvider(model),
+        auto_install=True,
+    )
+    _skill_review_counter = 0
+    _skill_review_interval = 3  # review every N turns
+
     # Resume session if requested
     if resume:
         if agent.load_session(resume):
@@ -292,6 +304,36 @@ def _chat_mode(args: list[str], resume: str | None = None, base_url: str | None 
             # Show token usage
             if final_event and final_event.get("usage"):
                 console.show_usage(final_event["usage"])
+
+            # ── Skill self-improvement review ──────────────────
+            _skill_review_counter += 1
+            if _skill_review_counter >= _skill_review_interval:
+                _skill_review_counter = 0
+                try:
+                    messages = getattr(agent, "_state", None)
+                    if messages and hasattr(messages, "messages"):
+                        msg_list = messages.messages
+                        tools_used = list(set(
+                            tc.get("name", "") 
+                            for tc in (final_event.get("tool_calls") or [])
+                        )) if final_event else []
+                        suggestions = skill_improver.review_session(msg_list, tools_used)
+                        for s in suggestions:
+                            if s.confidence >= 0.7:
+                                result_name = skill_improver.create_skill(s)
+                                if result_name:
+                                    console.success(
+                                        f"💡 New skill auto-generated: {result_name} "
+                                        f"(confidence: {s.confidence:.0%})"
+                                    )
+                                elif s.type == "new_skill":
+                                    console.info(
+                                        f"💡 Skill idea: {s.title} "
+                                        f"(confidence: {s.confidence:.0%}) — "
+                                        f"use 'kairos skill list' to review"
+                                    )
+                except Exception:
+                    pass  # Skill improvement is best-effort
 
         except KeyboardInterrupt:
             console.console.print("\n[yellow]⏸️  Interrupted[/]")
