@@ -435,6 +435,8 @@ class KairosConsole:
             ("/run <query>", "Run a one-shot query"),
             ("/save <name>", "Save current session"),
             ("/sessions", "List saved sessions"),
+            ("/session rename <old> <new>", "Rename a saved session"),
+            ("/session delete <name>", "Delete a saved session"),
             ("/perm [show|trust|ask|block <tool>]", "Manage permission policies"),
             ("/skills", "List installed skills"),
         ]

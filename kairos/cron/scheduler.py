@@ -312,6 +312,15 @@ class CronScheduler:
         job.status = JobStatus.PENDING
         return self.update(job)
 
+    def run_now(self, job_id: str) -> Job | None:
+        """Trigger a job to fire on the next tick (one-shot manual trigger)."""
+        job = self.get(job_id)
+        if not job:
+            return None
+        job.next_run = 0.0  # force immediate fire on next tick
+        job.status = JobStatus.PENDING
+        return self.update(job)
+
     def cancel(self, job_id: str) -> Job | None:
         """Cancel a job permanently."""
         job = self.get(job_id)

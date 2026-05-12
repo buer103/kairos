@@ -129,6 +129,10 @@ class StatefulAgent(Agent):
         """Delete a saved session from the backend."""
         return self._backend.delete(name)
 
+    def rename_session(self, old_name: str, new_name: str) -> bool:
+        """Rename a saved session."""
+        return self._backend.rename(old_name, new_name)
+
     def pop_last_exchange(self) -> int:
         """Remove the last user+assistant exchange from state. Returns count removed."""
         if self._state is None:

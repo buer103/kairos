@@ -122,6 +122,14 @@ class FileSessionBackend:
             return True
         return False
 
+    def rename(self, old_name: str, new_name: str) -> bool:
+        old_path = self._dir / f"{old_name}.json"
+        new_path = self._dir / f"{new_name}.json"
+        if not old_path.exists():
+            return False
+        old_path.rename(new_path)
+        return True
+
 
 # ============================================================================
 # Redis Backend (production)
@@ -206,6 +214,21 @@ class RedisSessionBackend:
         pipe.srem(self._index_key(), name)
         results = pipe.execute()
         return results[0] > 0  # deleted key count
+
+    def rename(self, old_name: str, new_name: str) -> bool:
+        """Rename a session: copy data to new key, delete old, update index."""
+        old_key = self._key(old_name)
+        new_key = self._key(new_name)
+        raw = self.client.get(old_key)
+        if raw is None:
+            return False
+        pipe = self.client.pipeline()
+        pipe.set(new_key, raw)
+        pipe.delete(old_key)
+        pipe.srem(self._index_key(), old_name)
+        pipe.sadd(self._index_key(), new_name)
+        pipe.execute()
+        return True
 
     def flush(self) -> int:
         """Delete all Kairos sessions from Redis. Returns count removed."""

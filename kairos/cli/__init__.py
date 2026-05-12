@@ -429,9 +429,14 @@ def _cron_mode(args: list[str]):
     elif args[0] == "remove" and len(args) >= 2:
         scheduler.remove(args[1])
         console.success(f"Removed job: {args[1]}")
+    elif args[0] == "run" and len(args) >= 2:
+        if job := scheduler.run_now(args[1]):
+            console.success(f"Triggered job: {job.name} (will fire on next tick)")
+        else:
+            console.error(f"Job not found: {args[1]}")
     else:
         console.error(f"Unknown cron command: {' '.join(args)}")
-        console.info("Usage: kairos cron [list|add|pause|resume|cancel|remove]")
+        console.info("Usage: kairos cron [list|add|pause|resume|run|cancel|remove]")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -823,6 +828,34 @@ def _handle_slash(console, cmd: str, agent, model_config, last_input_ref=None, g
                     )
         else:
             console.error("Session listing not available.")
+
+    elif command == "/session":
+        if len(parts) < 3:
+            console.error("Usage: /session rename <old> <new> | /session delete <name>")
+            return
+        sub = parts[1].lower()
+        if sub == "rename" and len(parts) >= 4:
+            old, new = parts[2], parts[3]
+            if hasattr(agent, "rename_session"):
+                if agent.rename_session(old, new):
+                    console.success(f"Session renamed: {old} → {new}")
+                    if new == getattr(agent, "_session_id", None):
+                        console.set_status(session=new)
+                else:
+                    console.error(f"Session not found: {old}")
+            else:
+                console.error("Session renaming not available.")
+        elif sub == "delete":
+            name = parts[2]
+            if hasattr(agent, "delete_session"):
+                if agent.delete_session(name):
+                    console.success(f"Session deleted: {name}")
+                else:
+                    console.error(f"Session not found: {name}")
+            else:
+                console.error("Session deletion not available.")
+        else:
+            console.error(f"Unknown session command: {sub}")
 
     elif command == "/run":
         if len(parts) >= 2:

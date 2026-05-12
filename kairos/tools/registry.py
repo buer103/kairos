@@ -212,10 +212,28 @@ def disable_tool(name: str) -> bool:
 # ── Execution ───────────────────────────────────────────────────
 
 def execute_tool(name: str, args: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
-    """Execute a registered tool with timeout enforcement."""
+    """Execute a registered tool with timeout enforcement.
+
+    Supports fuzzy name matching: if the exact name is not found,
+    searches for the closest registered tool name and corrects automatically.
+    """
     tool = _registry.get(name)
     if not tool:
-        return {"error": f"Unknown tool: {name}"}
+        # Fuzzy match fallback
+        matched = _fuzzy_match_tool(name)
+        if matched:
+            logger.warning(
+                "Tool '%s' not found — fuzzy-matched to '%s'", name, matched
+            )
+            name = matched
+            tool = _registry.get(name)
+        else:
+            # Suggest closest tools
+            suggestions = _suggest_tools(name)
+            hint = ""
+            if suggestions:
+                hint = f" Did you mean: {', '.join(suggestions)}?"
+            return {"error": f"Unknown tool: {name}.{hint}"}
 
     if not tool.get("enabled", True):
         return {"error": f"Tool disabled: {name}"}
@@ -406,3 +424,49 @@ def execute_tools_smart(
     for name, args in normalized_calls:
         results.append(execute_tool(name, args, timeout=timeout))
     return results
+
+
+# ══════════════════════════════════════════════════════════════
+# Fuzzy tool matching
+# ══════════════════════════════════════════════════════════════
+
+
+def _fuzzy_match_tool(name: str) -> str | None:
+    """Find the closest registered tool name via fuzzy matching.
+
+    Uses sequence matcher with a 0.6 similarity threshold.
+    Returns None if no close match found.
+    """
+    from difflib import SequenceMatcher
+
+    best_score = 0.0
+    best_name: str | None = None
+    name_lower = name.lower()
+
+    for registered in _registry:
+        reg_lower = registered.lower()
+        # Quick substring match first
+        if name_lower in reg_lower or reg_lower in name_lower:
+            return registered
+        score = SequenceMatcher(None, name_lower, reg_lower).ratio()
+        if score > best_score:
+            best_score = score
+            best_name = registered
+
+    if best_score >= 0.6 and best_name:
+        return best_name
+    return None
+
+
+def _suggest_tools(name: str, limit: int = 3) -> list[str]:
+    """Return the closest tool name suggestions for an unknown tool."""
+    from difflib import SequenceMatcher
+
+    scored = []
+    name_lower = name.lower()
+    for registered in _registry:
+        score = SequenceMatcher(None, name_lower, registered.lower()).ratio()
+        scored.append((score, registered))
+
+    scored.sort(reverse=True)
+    return [n for s, n in scored[:limit] if s > 0.3]
