@@ -228,6 +228,13 @@ def _chat_mode(args: list[str], resume: str | None = None, base_url: str | None 
     # StatefulAgent for session persistence + streaming support
     agent = StatefulAgent(model=model)
 
+    # Register delegate_task tool so the agent can spawn sub-agents
+    from kairos.agents.delegate import DelegationManager, register_delegate_tool
+    from kairos.providers.base import ModelProvider
+    dm = DelegationManager(model=ModelProvider(model), config=None)
+    register_delegate_tool(dm)
+    console.info(f"Delegate tool ready — max {dm.config.max_concurrent} concurrent sub-agents")
+
     # Resume session if requested
     if resume:
         if agent.load_session(resume):

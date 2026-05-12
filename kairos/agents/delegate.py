@@ -32,7 +32,7 @@ class DelegateTask:
     goal: str = ""
     context: str = ""  # Background info injected into sub-agent
     tools: list[str] = field(default_factory=list)  # Tool names to enable
-    timeout: float = 120.0
+    timeout: float = 180.0
     model_override: str = ""  # Override model for this task
     role: str = "worker"  # worker | reviewer | researcher
 
@@ -132,7 +132,7 @@ class DelegateConfig:
     """Configuration for the delegation system."""
 
     max_concurrent: int = 3
-    default_timeout: float = 120.0
+    default_timeout: float = 180.0
     max_retries: int = 1
     verbose: bool = False
 
@@ -296,18 +296,19 @@ def register_delegate_tool(delegation_manager: DelegationManager) -> None:
             },
             "timeout": {
                 "type": "integer",
-                "description": "Timeout per task in seconds (default: 120, max: 300)",
+                "description": "Timeout per task in seconds (default: 180, max: 600)",
             },
         },
+        timeout=600,  # Sub-agent makes LLM calls — needs generous timeout
     )
     def delegate_task(
         goal: str = "",
         context: str = "",
         tasks: list[dict[str, Any]] | None = None,
-        timeout: int = 120,
+        timeout: int = 180,
     ) -> dict[str, Any]:
         """Delegate tool — called by the agent."""
-        timeout = min(max(timeout, 10), 300)
+        timeout = min(max(timeout, 10), 600)
 
         if tasks:
             # Batch mode
