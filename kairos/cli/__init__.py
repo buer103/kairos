@@ -208,8 +208,6 @@ def _chat_mode(args: list[str], resume: str | None = None, base_url: str | None 
     """Interactive chat loop with Rich TUI and live streaming output."""
     from kairos.core.stateful_agent import StatefulAgent
     from kairos.providers.base import ModelConfig
-    from kairos.security.permission import PermissionManager, PermissionAction, PermissionRequest
-    from kairos.middleware.security_mw import SecurityMiddleware
 
     model = _get_model_config(base_url=base_url, model_name=model_name)
     if not model:
@@ -221,36 +219,14 @@ def _chat_mode(args: list[str], resume: str | None = None, base_url: str | None 
     display_model = getattr(model, "model", "default")
     console.set_status(model=f"{display_model} ({model.base_url})")
 
-    # Permission manager with interactive prompt
-    perm = PermissionManager()
-    _perm_console = console
-
-    async def _prompt_user(request: PermissionRequest) -> PermissionAction | None:
-        _perm_console.console.print()
-        _perm_console.console.print(
-            f"🔐 [bold yellow]Permission Required[/] — [cyan]{request.tool_name}[/]"
-        )
-        if request.description:
-            _perm_console.console.print(f"   {request.description}")
-        if request.path:
-            _perm_console.console.print(f"   Path: [dim]{request.path}[/]")
-        _perm_console.console.print()
-        _perm_console.console.print(
-            "  [green][a][/] Allow once   [yellow][y][/] Always allow   [red][n][/] Deny"
-        )
-        try:
-            choice = _perm_console.prompt("Permission")
-            key = choice.strip().lower()[:1] if choice else "n"
-            return {"a": PermissionAction.ALLOW_ONCE, "y": PermissionAction.ALLOW_SESSION}.get(
-                key, PermissionAction.DENY)
-        except (KeyboardInterrupt, EOFError):
-            return PermissionAction.DENY
-
-    perm.set_prompt_callback(_prompt_user)
-    sec_mw = SecurityMiddleware(permission_manager=perm)
+    # Interactive chat mode: no SecurityMiddleware by default.
+    # The user IS the permission — they type commands directly.
+    # SecurityMiddleware is for Gateway/server multi-user scenarios.
+    # To enable it: use build_default(enable_security=True) or
+    # pass middlewares=[SecurityMiddleware(...)] manually.
 
     # StatefulAgent for session persistence + streaming support
-    agent = StatefulAgent(model=model, middlewares=[sec_mw])
+    agent = StatefulAgent(model=model)
 
     # Resume session if requested
     if resume:
