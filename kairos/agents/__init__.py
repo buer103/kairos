@@ -4,6 +4,7 @@ from kairos.agents.types import SubAgentType, BUILTIN_TYPES, GENERAL_PURPOSE, BA
 from kairos.agents.factory import register_subagent_types, get_subagent_type, set_executor
 from kairos.agents.executor import SubAgentExecutor
 from kairos.agents.delegate import (
+    CancelEvent,
     DelegateTask,
     DelegateResult,
     DelegateConfig,
@@ -22,6 +23,7 @@ __all__ = [
     "get_subagent_type",
     "set_executor",
     "SubAgentExecutor",
+    "CancelEvent",
     "DelegateTask",
     "DelegateResult",
     "DelegateConfig",

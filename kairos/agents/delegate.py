@@ -13,6 +13,7 @@ import concurrent.futures
 import json
 import logging
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -58,6 +59,57 @@ class DelegateResult:
 # Sub-agent
 # ═══════════════════════════════════════════════════════════════
 
+class CancelEvent:
+    """Lightweight cancellation token for sub-agent graceful shutdown.
+
+    Hermes-aligned pattern: sub-agents check this event periodically
+    during their execution loop. When set, they stop gracefully and
+    return a partial result instead of crashing.
+
+    Usage::
+
+        cancel = CancelEvent()
+        # In sub-agent loop:
+        if cancel.is_set():
+            return partial_result
+        # From parent:
+        cancel.set()  # signals all sub-agents to stop
+    """
+
+    def __init__(self, reason: str = "Cancelled"):
+        self._event = threading.Event()
+        self.reason = reason
+        self._set_at: float = 0.0
+
+    def set(self, reason: str | None = None) -> None:
+        if reason:
+            self.reason = reason
+        self._set_at = time.time()
+        self._event.set()
+
+    def is_set(self) -> bool:
+        return self._event.is_set()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        return self._event.wait(timeout)
+
+    def clear(self) -> None:
+        self._event.clear()
+        self._set_at = 0.0
+
+    @property
+    def cancelled(self) -> bool:
+        return self._event.is_set()
+
+    @property
+    def set_at(self) -> float:
+        return self._set_at
+
+    def __repr__(self) -> str:
+        state = "set" if self._event.is_set() else "clear"
+        return f"CancelEvent({state}, reason={self.reason!r})"
+
+
 class SubAgent:
     """A lightweight agent spawned to handle a single delegated task.
 
@@ -71,10 +123,12 @@ class SubAgent:
         model_provider: Any,
         tool_registry: Any = None,
         system_prompt: str = "",
+        cancel_event: CancelEvent | None = None,
     ):
         self.task = task
         self.model = model_provider
         self.tool_registry = tool_registry
+        self.cancel_event = cancel_event or CancelEvent()
         self.system_prompt = system_prompt or (
             "You are a focused sub-agent. Complete the assigned task precisely "
             "and return a concise result. Do NOT ask for clarification — make "
@@ -84,9 +138,24 @@ class SubAgent:
         )
 
     def run(self) -> DelegateResult:
-        """Execute the delegated task and return the result."""
-        import time
+        """Execute the delegated task and return the result.
+
+        Checks cancel_event before execution — if cancelled, returns
+        immediately with a cancellation result.
+        """
         start = time.time()
+
+        # Check cancellation before starting
+        if self.cancel_event.is_set():
+            elapsed = (time.time() - start) * 1000
+            logger.info("Sub-agent %s cancelled before start: %s",
+                        self.task.id, self.cancel_event.reason)
+            return DelegateResult(
+                task_id=self.task.id,
+                success=False,
+                error=f"Cancelled: {self.cancel_event.reason}",
+                duration_ms=elapsed,
+            )
 
         try:
             # Capture parent trace context for full-chain observability
@@ -101,7 +170,22 @@ class SubAgent:
                 max_iterations=10,
             )
 
-            result = agent.run(self.task.goal, parent_trace=parent_trace)
+            # Check cancellation after agent creation (may have waited)
+            if self.cancel_event.is_set():
+                elapsed = (time.time() - start) * 1000
+                logger.info("Sub-agent %s cancelled before run: %s",
+                            self.task.id, self.cancel_event.reason)
+                return DelegateResult(
+                    task_id=self.task.id,
+                    success=False,
+                    error=f"Cancelled: {self.cancel_event.reason}",
+                    duration_ms=elapsed,
+                )
+
+            result = agent.run(
+                self.task.goal,
+                parent_trace=parent_trace,
+            )
             elapsed = (time.time() - start) * 1000
 
             return DelegateResult(
@@ -170,6 +254,8 @@ class DelegationManager:
         self.system_prompt = system_prompt
         self._lock = threading.Lock()
         self._active_count = 0
+        self._active_cancel_events: list[CancelEvent] = []
+        self._global_cancel = CancelEvent()
 
     def delegate(self, task: DelegateTask) -> DelegateResult:
         """Delegate a single task. Runs synchronously."""
@@ -194,6 +280,9 @@ class DelegationManager:
         max_workers = min(len(tasks), self.config.max_concurrent)
         results: list[DelegateResult] = []
 
+        # Track cancel events for active sub-agents
+        cancel_events: list[CancelEvent] = []
+
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=max_workers,
             thread_name_prefix="kairos-sub",
@@ -201,10 +290,25 @@ class DelegationManager:
             futures: dict[concurrent.futures.Future, str] = {}
 
             for task in tasks:
+                # Check global cancellation before spawning
+                if self._global_cancel.is_set():
+                    results.append(DelegateResult(
+                        task_id=task.id,
+                        success=False,
+                        error=f"Batch cancelled: {self._global_cancel.reason}",
+                    ))
+                    continue
+
+                cancel = CancelEvent()
+                cancel_events.append(cancel)
+                with self._lock:
+                    self._active_cancel_events.append(cancel)
+
                 sub = SubAgent(
                     task=task,
                     model_provider=self.model,
                     system_prompt=self.system_prompt,
+                    cancel_event=cancel,
                 )
                 future = executor.submit(
                     self._run_with_timeout, sub, task.timeout or self.config.default_timeout
@@ -223,6 +327,12 @@ class DelegationManager:
                         success=False,
                         error=f"Collection error: {e}",
                     ))
+
+        # Clean up cancel events
+        with self._lock:
+            for ce in cancel_events:
+                if ce in self._active_cancel_events:
+                    self._active_cancel_events.remove(ce)
 
         # Sort by task order
         id_order = {t.id: i for i, t in enumerate(tasks)}
@@ -244,8 +354,12 @@ class DelegationManager:
         return self.delegate_batch(tasks)
 
     def _run_with_timeout(self, sub: SubAgent, timeout: float) -> DelegateResult:
-        """Run a sub-agent with a timeout wrapper."""
-        start = __import__("time").time()
+        """Run a sub-agent with a timeout wrapper.
+
+        On timeout, signals the sub-agent's cancel_event for graceful shutdown
+        before returning the timeout error.
+        """
+        start = time.time()
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as inner:
             future = inner.submit(sub.run)
@@ -253,13 +367,48 @@ class DelegationManager:
                 result = future.result(timeout=timeout)
                 return result
             except concurrent.futures.TimeoutError:
-                elapsed = (__import__("time").time() - start) * 1000
+                # Signal cancellation so the sub-agent stops its LLM call
+                sub.cancel_event.set(reason=f"Timeout after {timeout}s")
+                elapsed = (time.time() - start) * 1000
+                logger.warning(
+                    "Sub-agent %s timed out after %.1fs — cancel event set",
+                    sub.task.id, timeout,
+                )
                 return DelegateResult(
                     task_id=sub.task.id,
                     success=False,
                     error=f"Timed out after {timeout}s",
                     duration_ms=elapsed,
                 )
+
+    def cancel_all(self, reason: str = "Cancelled by user") -> int:
+        """Cancel ALL running sub-agents immediately.
+
+        Signals every active sub-agent's cancel_event.
+        Returns the count of sub-agents cancelled.
+
+        Thread-safe — can be called from any thread.
+        """
+        with self._lock:
+            self._global_cancel.set(reason=reason)
+            cancelled = len(self._active_cancel_events)
+            for ce in self._active_cancel_events:
+                ce.set(reason=reason)
+            logger.info(
+                "Cancelled %d active sub-agents: %s", cancelled, reason,
+            )
+            return cancelled
+
+    @property
+    def active_count(self) -> int:
+        """Number of currently active sub-agents."""
+        with self._lock:
+            return len(self._active_cancel_events)
+
+    @property
+    def cancelled(self) -> bool:
+        """Whether global cancellation has been requested."""
+        return self._global_cancel.is_set()
 
 
 # ═══════════════════════════════════════════════════════════════
