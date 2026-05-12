@@ -345,21 +345,85 @@ register_delegate_tool(manager)
 
 ## Security
 
+### 3-Level Permission System
+
 ```python
-# Permission system (3 levels)
-from kairos.security import PermissionManager, PermissionLevel
+from kairos.security.permission import PermissionManager, PermissionLevel, PermissionAction
 
-pm = PermissionManager(level=PermissionLevel.ASK)  # BLOCK | ASK | TRUST
-# TRUST: auto-approve new tools (interactive mode)
-# ASK: prompt user for each tool call
-# BLOCK: deny all unlisted tools
+pm = PermissionManager(auto_approve=False)
 
-# Sandbox execution
+# BLOCK: always deny (e.g. cronjob)
+# ASK: prompt user (e.g. terminal, write_file)  
+# TRUST: always allow (e.g. read_file, search_files)
+
+# Set per-tool policies
+from kairos.security.permission import ToolPolicy
+pm.set_policy(ToolPolicy("write_file", level=PermissionLevel.ASK))
+pm.set_policy(ToolPolicy("read_file", level=PermissionLevel.TRUST))
+
+# Interactive CLI prompt (y/n/session-grant)
+# In CLI mode, SecurityMiddleware auto-activates with Rich-based prompt
+# /yolo → toggles auto_approve (bypass all checks)
+# /perm trust <tool> → runtime policy change
+# /perm block <tool>
+# /perm show → list all policies
+```
+
+### Sandbox
+
+```python
 from kairos.sandbox import LocalSandbox, DockerSandbox, SSHSandbox
 
 sandbox = DockerSandbox(image="python:3.12-slim", memory_limit="512m")
 result = sandbox.run("python -c 'print(2+2)'")
 # result: {"stdout": "4\n", "stderr": "", "exit_code": 0, "duration_ms": 120}
+```
+
+### Guardrails
+
+```python
+from kairos.security.guardrails import InputGuard, OutputGuard
+from kairos.security.file_safety import FileSafetyChecker
+
+guard = InputGuard(max_length=50000)
+ok, reason = guard.validate_input(user_message)
+
+checker = FileSafetyChecker()
+ok, reason = checker.is_safe("/etc/passwd", kind="path")
+```
+
+---
+
+## Hook System (24 lifecycle hooks)
+
+```python
+from kairos.hooks import HookPoint, get_hook_registry
+
+registry = get_hook_registry()
+
+# Register a callback (priority: lower = earlier execution)
+@registry.on(HookPoint.BEFORE_TOOL, priority=50)
+def audit_tool_calls(tool_name, args, **ctx):
+    print(f"Tool: {tool_name}({args})")
+
+# Emit manually
+registry.emit(HookPoint.BEFORE_TOOL, tool_name="read_file", args={"path": "x.py"})
+
+# All 24 hook points:
+#   Agent: AGENT_START, AGENT_END, AGENT_INTERRUPT
+#   Model: BEFORE_MODEL, AFTER_MODEL, MODEL_ERROR
+#   Tool:  BEFORE_TOOL, AFTER_TOOL, TOOL_ERROR, TOOL_RETRY
+#   Message: BEFORE_MESSAGE, AFTER_MESSAGE
+#   Session: SESSION_SAVE, SESSION_LOAD
+#   Middleware: MIDDLEWARE_CHAIN_START, MIDDLEWARE_CHAIN_END
+#   Compress: BEFORE_COMPRESSION, AFTER_COMPRESSION
+#   Memory: MEMORY_SAVE, MEMORY_LOAD
+#   Gateway: GATEWAY_MESSAGE_RECEIVED, GATEWAY_RESPONSE_SENT
+#   Skills: SKILL_LOADED, SKILL_CREATED
+
+# Query
+print(registry.listeners(HookPoint.BEFORE_TOOL))  # 1
+print(registry.list_hooks())  # {"tool:before": 1, ...}
 ```
 
 ---
@@ -510,4 +574,45 @@ from kairos.config import Config, get_config
 config = get_config()
 print(config.model.api_key)
 print(config.agent.max_iterations)
+```
+
+---
+
+## Web UI
+
+```bash
+# Start the web server (embedded SPA)
+kairos web
+
+# Custom host/port
+kairos web --host 0.0.0.0 --port 3000
+```
+
+The Web UI is a single-page application with:
+- **Multi-session** sidebar — create/switch/delete sessions
+- **Live streaming** — real-time token-by-token output via SSE
+- **Rich tool cards** — per-tool icons, status badges, timing, expandable args
+- **Markdown rendering** — code blocks, links, lists, blockquotes
+- **Copy-to-clipboard** — one-click on any agent message
+- **Mobile responsive** — hamburger menu, overlay backdrop
+
+### Grace Call Retry
+
+```python
+# Automatic retry on tool failure with simplified arguments
+# In Agent._execute_loop(), tool execution wraps with _grace_call():
+#   - Truncates long string args
+#   - Drops optional parameters
+#   - Retries once with fallback defaults
+#   - Emits TOOL_RETRY hook on success
+```
+
+### Sub-Agent CancelEvent
+
+```python
+from kairos.agents.subagent import CancelEvent
+
+cancel = CancelEvent()
+cancel.set()  # signal cancellation
+print(cancel.is_set())  # True
 ```

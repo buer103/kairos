@@ -305,3 +305,38 @@ def web_fetch(url: str, max_chars: int = 10000) -> dict:
         return {"url": url, "content": "", "status_code": e.code, "error": f"HTTP {e.code}"}
     except Exception as e:
         return {"url": url, "content": "", "status_code": 0, "error": str(e)}
+
+
+# ── finish_task — sub-agent completion signal ──────────────────
+
+
+@register_tool(
+    name="finish_task",
+    description="Signal that the current task is complete. Call this when you have "
+                "finished all work and are ready to return your final answer. "
+                "Include a summary of what was accomplished.",
+    parameters={
+        "summary": {
+            "type": "string",
+            "description": "Brief summary of what was accomplished in this task.",
+        },
+        "status": {
+            "type": "string",
+            "description": "Task outcome: 'success', 'partial', or 'failed'.",
+            "enum": ["success", "partial", "failed"],
+        },
+    },
+    category="control",
+)
+def finish_task(summary: str = "", status: str = "success") -> dict:
+    """Signal task completion for sub-agents and orchestrators.
+
+    The DelegationManager checks for this tool call to determine when
+    a sub-agent has completed its assigned work.
+    """
+    return {
+        "completed": True,
+        "summary": summary[:500],
+        "status": status,
+        "action": "stop",
+    }

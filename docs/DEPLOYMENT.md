@@ -240,3 +240,29 @@ If you see 429 responses, check:
 - `gateway.rate_limit.requests_per_minute` in config.yaml
 - Provider rate limits (DeepSeek: 500/min, OpenAI: varies by tier)
 - Credential pool stats for key exhaustion
+
+## Deploying the Web UI
+
+The Web UI is a lightweight single-page application embedded in the Python package.
+No npm, no build step, no extra dependencies.
+
+```bash
+# Start the Web UI server
+kairos web --host 0.0.0.0 --port 8080
+
+# Or via Docker
+docker run -d -p 8080:8080 \\
+  -e DEEPSEEK_API_KEY=$DEEPSEEK_API_KEY \\
+  kairos:latest web --host 0.0.0.0 --port 8080
+```
+
+Access at `http://localhost:8080` — multi-session chat with live streaming,
+rich tool cards, markdown rendering, and mobile-responsive design.
+
+### Health check endpoints
+
+```
+GET /api/health          → {"status":"ok","uptime":...,"sessions":3}
+GET /api/sessions        → {"sessions":[...]}
+GET /api/sessions/active → {"active":["default","session-a1b2"],"count":2}
+```
