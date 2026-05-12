@@ -19,14 +19,19 @@ logger = logging.getLogger("kairos.web")
 class WebServer:
     """Self-contained web server for the Kairos Web UI.
 
+    Supports multiple concurrent sessions — each has its own StatefulAgent
+    with isolated conversation history.
+
     Endpoints:
         GET  /           — Serve the SPA
         POST /api/chat   — Send message, returns SSE stream
         GET  /api/health — Health check
-        GET  /api/sessions     — List saved sessions
-        POST /api/sessions/load  — Load a session
+        GET  /api/sessions      — List saved sessions (persistent)
+        POST /api/sessions/new  — Create a new session
+        POST /api/sessions/load  — Load a persistent session
         POST /api/sessions/save  — Save current session
-        DELETE /api/sessions/{name} — Delete a session
+        DELETE /api/sessions/{name} — Delete a persistent session
+        GET  /api/sessions/active — List active (in-memory) sessions
     """
 
     def __init__(
@@ -36,13 +41,16 @@ class WebServer:
         port: int = 8080,
         cors_origins: list[str] | None = None,
     ):
-        self.agent = agent
+        self._agent_factory = agent  # template for creating new sessions
         self.host = host
         self.port = port
         self._cors_origins = cors_origins or ["*"]
         self._app = None
         self._runner = None
         self._started_at = time.time()
+        # Multi-session support
+        self._sessions: dict[str, Any] = {"default": agent}
+        self._session_lock = asyncio.Lock()
 
     # ── Build app ──────────────────────────────────────────────
 
@@ -55,6 +63,8 @@ class WebServer:
         app.router.add_post("/api/chat", self._handle_chat)
         app.router.add_get("/api/health", self._handle_health)
         app.router.add_get("/api/sessions", self._handle_list_sessions)
+        app.router.add_get("/api/sessions/active", self._handle_active_sessions)
+        app.router.add_post("/api/sessions/new", self._handle_new_session)
         app.router.add_post("/api/sessions/load", self._handle_load_session)
         app.router.add_post("/api/sessions/save", self._handle_save_session)
         app.router.add_delete("/api/sessions/{name}", self._handle_delete_session)
@@ -78,10 +88,14 @@ class WebServer:
         try:
             body = await request.json()
             message = body.get("message", "").strip()
+            session_id = body.get("session_id", "default")
             if not message:
                 return web.json_response({"error": "Empty message"}, status=400)
         except Exception:
             return web.json_response({"error": "Invalid JSON"}, status=400)
+
+        # Resolve session
+        agent = await self._get_session(session_id)
 
         # Prepare SSE response
         resp = web.StreamResponse(
@@ -97,14 +111,14 @@ class WebServer:
         await resp.prepare(request)
 
         try:
-            if hasattr(self.agent, "chat_stream"):
-                stream = self.agent.chat_stream(message)
+            if hasattr(agent, "chat_stream"):
+                stream = agent.chat_stream(message)
                 for event in stream:
                     await resp.write(
                         f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode()
                     )
             else:
-                result = self.agent.chat(message)
+                result = agent.chat(message)
                 event = {
                     "type": "done",
                     "content": result.get("content", str(result)),
@@ -123,14 +137,51 @@ class WebServer:
         await resp.write_eof()
         return resp
 
+    # ── Session management (multi-session) ─────────────────────
+
+    async def _get_session(self, session_id: str) -> Any:
+        """Get or create a session agent."""
+        async with self._session_lock:
+            if session_id not in self._sessions:
+                # Create a fresh agent from the factory template
+                from copy import deepcopy
+                agent = deepcopy(self._agent_factory)
+                # If it's a StatefulAgent, preserve its config
+                if hasattr(agent, "reset"):
+                    agent.reset()
+                self._sessions[session_id] = agent
+            return self._sessions[session_id]
+
+    async def _handle_new_session(self, request):
+        """Create a new session and return its ID."""
+        from aiohttp import web
+        import uuid
+        session_id = f"session_{uuid.uuid4().hex[:8]}"
+        async with self._session_lock:
+            from copy import deepcopy
+            agent = deepcopy(self._agent_factory)
+            if hasattr(agent, "reset"):
+                agent.reset()
+            self._sessions[session_id] = agent
+        return web.json_response({"session_id": session_id, "status": "created"})
+
+    async def _handle_active_sessions(self, request):
+        """List all active (in-memory) sessions."""
+        from aiohttp import web
+        async with self._session_lock:
+            sessions = list(self._sessions.keys())
+        return web.json_response({"sessions": sessions, "count": len(sessions)})
+
     # ── Health ─────────────────────────────────────────────────
 
     async def _handle_health(self, request):
         from aiohttp import web
+        async with self._session_lock:
+            session_count = len(self._sessions)
         return web.json_response({
             "status": "ok",
             "uptime": time.time() - self._started_at,
-            "model": getattr(self.agent, "model", "unknown"),
+            "active_sessions": session_count,
         })
 
     # ── Sessions ───────────────────────────────────────────────
@@ -513,6 +564,7 @@ body {
   <div id="chat-header">
     <span style="font-size:14px;font-weight:510;color:var(--text3)">Web UI</span>
     <span class="model-badge" id="model-badge">kairos</span>
+    <span class="model-badge" id="session-id-display" style="font-size:11px;opacity:0.6">default</span>
   </div>
   <div id="messages">
     <div class="msg agent">
@@ -532,6 +584,7 @@ body {
 <script>
 // ── State ────────────────────────────────
 let currentSession = null;
+let sessionId = 'default';  // backend session ID for multi-session
 let streaming = false;
 
 // ── Send message ─────────────────────────
@@ -551,7 +604,7 @@ async function send() {
     const resp = await fetch('/api/chat', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({message: msg})
+      body: JSON.stringify({message: msg, session_id: sessionId})
     });
 
     const reader = resp.body.getReader();
@@ -704,10 +757,18 @@ async function deleteSession(name) {
   } catch(e) {}
 }
 
-function newSession() {
-  document.getElementById('messages').innerHTML = '';
-  currentSession = null;
-  toast('New session');
+async function newSession() {
+  try {
+    const resp = await fetch('/api/sessions/new', {method: 'POST'});
+    const data = await resp.json();
+    sessionId = data.session_id;
+    document.getElementById('messages').innerHTML = '';
+    currentSession = null;
+    document.getElementById('session-id-display').textContent = sessionId;
+    toast('New session: ' + sessionId);
+  } catch(e) {
+    toast('Failed to create session');
+  }
 }
 
 function toast(msg) {
