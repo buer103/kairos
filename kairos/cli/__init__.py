@@ -153,6 +153,7 @@ def _get_model_config(base_url: str | None = None, model_name: str | None = None
     Priority: CLI flags > env vars > config file > defaults
     """
     from kairos.config import get_config
+    from kairos.providers.base import ModelConfig  # noqa: F811 — local import for CLI module
     config = get_config()
 
     # API key
