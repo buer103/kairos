@@ -241,6 +241,8 @@ def _chat_mode(args: list[str], resume: str | None = None, base_url: str | None 
 
     # Session state
     _last_input: list[str] = [""]  # for /retry (mutable for closure capture)
+    _goal: dict = {"text": "", "active": False}  # for /goal
+    _show_reasoning: list[bool] = [True]  # for /reasoning (mutable)
 
     # Resume session if requested
     if resume:
@@ -277,11 +279,17 @@ def _chat_mode(args: list[str], resume: str | None = None, base_url: str | None 
             continue
 
         if user_input.startswith("/"):
-            _handle_slash(console, user_input, agent, model, _last_input_ref)
+            _handle_slash(console, user_input, agent, model, _last_input_ref, _goal, _show_reasoning)
             continue
 
         _last_input_ref[0] = user_input  # save for /retry
         console.user_input(user_input)
+
+        # ── Inject active goal into system prompt ────────────
+        if _goal["active"] and _goal["text"] and hasattr(agent, "system_prompt"):
+            goal_block = f"\n<goal>\nCurrent goal: {_goal['text']}\nWork towards this goal across turns.\n</goal>"
+            if goal_block not in agent.system_prompt:
+                agent.system_prompt += goal_block
 
         try:
             # ── Streaming mode: use chat_stream() ────────────
@@ -702,7 +710,7 @@ def _parse_field(field: str) -> list[int]:
     return values
 
 
-def _handle_slash(console, cmd: str, agent, model_config, last_input_ref: list[str] = None):
+def _handle_slash(console, cmd: str, agent, model_config, last_input_ref=None, goal=None, show_reasoning_ref=None):
     """Handle slash commands in chat mode."""
     parts = cmd.strip().split()
     command = parts[0].lower()
@@ -861,6 +869,17 @@ def _handle_slash(console, cmd: str, agent, model_config, last_input_ref: list[s
             console.info("🛡️  YOLO mode OFF — safety checks restored.")
             _set_yolo_on_middleware(agent, False)
 
+    elif command == "/goal":
+        _handle_goal(console, parts, goal)
+
+    elif command == "/reasoning":
+        if show_reasoning_ref is not None:
+            if len(parts) >= 2 and parts[1] in ("on", "off"):
+                show_reasoning_ref[0] = parts[1] == "on"
+            else:
+                show_reasoning_ref[0] = not show_reasoning_ref[0]
+            console.info(f"Reasoning display: {'ON 🧠' if show_reasoning_ref[0] else 'OFF'}")
+
     elif command == "/background":
         if len(parts) < 2:
             console.error("Usage: /background <prompt>")
@@ -891,6 +910,45 @@ def _set_yolo_on_middleware(agent, enabled: bool) -> None:
     for mw in getattr(agent, "pipeline", None) and agent.pipeline._middlewares or []:
         if hasattr(mw, "yolo_bypass"):
             mw.yolo_bypass = enabled
+
+
+def _handle_goal(console, parts: list[str], goal: dict) -> None:
+    """Handle /goal command: set, status, pause, resume, clear."""
+    if len(parts) < 2:
+        if goal["active"]:
+            console.info(f"🎯 Active goal: {goal['text']}")
+            console.info("  /goal status | /goal pause | /goal clear")
+        else:
+            console.info("No active goal. Use /goal <text> to set one.")
+        return
+
+    sub = parts[1].lower()
+    if sub == "status":
+        if goal["active"]:
+            console.info(f"🎯 Goal (active): {goal['text']}")
+        else:
+            console.info("No active goal.")
+    elif sub == "pause":
+        goal["active"] = False
+        console.success(f"⏸️  Goal paused: {goal['text']}")
+    elif sub == "resume":
+        if goal["text"]:
+            goal["active"] = True
+            console.success(f"▶️  Goal resumed: {goal['text']}")
+        else:
+            console.error("No goal to resume. Set one with /goal <text>")
+    elif sub == "clear":
+        old = goal["text"]
+        goal["text"] = ""
+        goal["active"] = False
+        console.success(f"🗑️  Goal cleared: {old}")
+    else:
+        # Set new goal
+        text = " ".join(parts[1:])
+        goal["text"] = text
+        goal["active"] = True
+        console.success(f"🎯 Goal set: {text}")
+        console.info("The agent will work towards this goal across turns. Use /goal status to check.")
 
 
 _BG_TASKS: dict[int, dict] = {}  # task_id -> {prompt, thread, done}

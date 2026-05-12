@@ -423,6 +423,8 @@ class KairosConsole:
             ("/retry", "Resend the last message (after timeout/error)"),
             ("/undo", "Undo the last exchange (user message + agent reply)"),
             ("/background <prompt>", "Run a prompt in the background (non-blocking)"),
+            ("/goal [status|pause|resume|clear|<text>]", "Set or manage a persistent goal across turns"),
+            ("/reasoning [on|off]", "Toggle display of model reasoning/thinking"),
             ("/yolo", "Toggle YOLO mode — bypass dangerous command checks"),
             ("/edit", "Open multi-line editor for code/long text input"),
             ("/model <name>", "Switch model (e.g., /model gpt-4)"),
