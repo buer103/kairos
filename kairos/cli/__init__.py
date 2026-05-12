@@ -87,6 +87,8 @@ def main():
         _curator_mode(args[1:])
     elif args[0] == "doctor":
         _doctor_mode()
+    elif args[0] == "web":
+        _web_mode(base_url=base_url, model_name=model_name)
     elif args[0].startswith("-"):
         print(f"Unknown flag: {args[0]}")
         _print_usage()
@@ -120,6 +122,9 @@ Management:
   kairos config init         Generate default config file
   kairos skill list          List installed skills
   kairos curator status      Show skill lifecycle status
+  kairos doctor               Health check
+  kairos config migrate       Upgrade old config with new defaults
+  kairos web                  Launch Web UI (http://127.0.0.1:8080)
   kairos --version           Show version"""
     print(msg)
 
@@ -691,6 +696,41 @@ def _doctor_mode():
     else:
         print("⚠️  Some checks failed. Review the ❌ items above.")
     print()
+
+
+# ═══════════════════════════════════════════════════════════════
+# Web UI mode
+# ═══════════════════════════════════════════════════════════════
+
+
+def _web_mode(base_url: str | None = None, model_name: str | None = None):
+    """Start the Kairos Web UI server."""
+    import asyncio
+
+    from kairos.web import WebServer
+    from kairos.core.stateful_agent import StatefulAgent
+
+    model = _get_model_config(base_url=base_url, model_name=model_name)
+    if not model:
+        print("❌ No API key found. Set KAIROS_API_KEY or DEEPSEEK_API_KEY.")
+        return
+
+    agent = StatefulAgent(model=model)
+    server = WebServer(agent=agent, host="127.0.0.1", port=8080)
+
+    async def run():
+        await server.start()
+        print(f"\n✨ Kairos Web UI: http://127.0.0.1:8080\n")
+        try:
+            while True:
+                await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            pass
+
+    try:
+        asyncio.run(run())
+    except KeyboardInterrupt:
+        print("\n👋 Shutting down...")
 
 
 # ═══════════════════════════════════════════════════════════════
