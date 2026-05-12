@@ -137,7 +137,15 @@ class KairosConsole:
         self._history.append({"role": "user", "content": content})
 
     def tool_call(self, name: str, args: dict[str, Any], result: Any, duration_ms: float = 0) -> None:
-        """Display a tool call with its arguments and result."""
+        """Display a tool call. Always shows one-line indicator; tree in verbose."""
+        # Always show a one-liner
+        result_str = str(result)
+        if len(result_str) > 80:
+            result_str = result_str[:80] + "..."
+        self.console.print(
+            f"  [dim]🔧 {name}[/] [dim]{result_str}[/]"
+        )
+
         if not self.verbose:
             return
 
@@ -166,10 +174,17 @@ class KairosConsole:
             "duration_ms": duration_ms,
         })
 
-    def error(self, message: str) -> None:
-        """Display an error message."""
+    def error(self, message: str, hint: str = "") -> None:
+        """Display an error with optional fix suggestion."""
+        content = Text(message, style="bold red")
+        if hint:
+            content = Text.assemble(
+                (message + "\n", "bold red"),
+                ("  💡 ", "dim"),
+                (hint, "dim"),
+            )
         panel = Panel(
-            message,
+            content,
             title=Text("⚠️ Error", style="bold red"),
             border_style="red",
             box=self.skin["box"],
@@ -350,6 +365,42 @@ class KairosConsole:
     # ═══════════════════════════════════════════════════════════
     # Display helpers
     # ═══════════════════════════════════════════════════════════
+
+    def show_welcome(self, version: str, model: str, base_url: str,
+                     session_count: int, tool_count: int) -> None:
+        """First-run welcome panel showing capabilities at a glance."""
+        panel = Panel(
+            Text.assemble(
+                ("Welcome to Kairos ", "bold cyan"),
+                (f"v{version}\n\n", "dim"),
+                ("You're connected to ", ""),
+                (f"{model}", "bold"),
+                (f"\n{base_url}\n\n", "dim"),
+                ("What you can do:\n", "bold"),
+                ("  💬  Chat naturally — ask questions, get answers\n", ""),
+                ("  📁  File ops — read/write/search files in current dir\n", ""),
+                ("  💻  Terminal — run shell commands\n", ""),
+                ("  🔍  Web search — fetch live information\n", ""),
+                ("  🤖  Multi-agent — delegate tasks to sub-agents\n", ""),
+                ("  💾  Sessions — save/resume conversations\n", ""),
+                (f"\n{tool_count} tools ready  ·  {session_count} saved sessions  ·  ", "dim"),
+                ("/help", "bold cyan"),
+                (" for more", "dim"),
+            ),
+            title=Text("🤖 Kairos", style=self.skin["agent_color"]),
+            border_style=self.skin["agent_color"],
+            box=self.skin["box"],
+            padding=(1, 2),
+        )
+        self.console.print(panel)
+        self.console.print()
+
+    def tool_hint(self, name: str, message: str = "") -> None:
+        """Show a subtle one-line tool activity indicator. Always visible."""
+        if message:
+            self.console.print(f"  [dim]🔧 {name}[/] [dim]{message}[/]")
+        else:
+            self.console.print(f"  [dim]🔧 {name}...[/]")
 
     def show_help(self) -> None:
         """Display available slash commands."""

@@ -233,7 +233,6 @@ def _chat_mode(args: list[str], resume: str | None = None, base_url: str | None 
     from kairos.providers.base import ModelProvider
     dm = DelegationManager(model=ModelProvider(model), config=None)
     register_delegate_tool(dm)
-    console.info(f"Delegate tool ready — max {dm.config.max_concurrent} concurrent sub-agents")
 
     # Resume session if requested
     if resume:
@@ -241,20 +240,27 @@ def _chat_mode(args: list[str], resume: str | None = None, base_url: str | None 
             console.success(f"Resumed session: {resume}")
             console.console.print()
         else:
-            console.error(f"Session not found: {resume}")
+            console.error("Session not found. Check the name with --list-sessions.", 
+                          hint="Use: kairos --list-sessions")
             return
 
     from kairos import __version__
+    from kairos.tools.registry import get_all_tools
     session_count = len(agent.list_sessions())
-    console.info(
-        f"Kairos {__version__} — {session_count} saved session(s) — type /help for commands"
+    tool_count = len(get_all_tools())
+
+    # ── Welcome panel ────────────────────────────────────────
+    console.show_welcome(
+        version=__version__,
+        model=display_model,
+        base_url=model.base_url,
+        session_count=session_count,
+        tool_count=tool_count,
     )
-    console.info(f"Model: {display_model} @ {model.base_url}  ·  Streaming: ON")
-    console.console.print()
 
     while True:
         try:
-            user_input = console.prompt("Kairos")
+            user_input = console.prompt("You")
         except (KeyboardInterrupt, EOFError):
             console.console.print("\n👋 Goodbye!")
             break
@@ -273,8 +279,8 @@ def _chat_mode(args: list[str], resume: str | None = None, base_url: str | None 
             stream = agent.chat_stream(user_input)
             final_content, final_event = console.stream_response(stream)
 
-            # Show verbose tool calls if enabled
-            if console.verbose and final_event and final_event.get("tool_calls"):
+            # Show tool calls (always a one-liner, tree in verbose)
+            if final_event and final_event.get("tool_calls"):
                 for tc in final_event["tool_calls"]:
                     console.tool_call(
                         name=tc.get("name", "?"),
@@ -293,7 +299,18 @@ def _chat_mode(args: list[str], resume: str | None = None, base_url: str | None 
                 agent.interrupt()
             continue
         except Exception as e:
-            console.error(f"Agent error: {e}")
+            err_msg = str(e)
+            if "timeout" in err_msg.lower():
+                hint = "The operation took too long. Try a simpler query or increase timeout."
+            elif "connection" in err_msg.lower():
+                hint = "Cannot reach the model server. Check your network and --base-url."
+            elif "api key" in err_msg.lower() or "auth" in err_msg.lower():
+                hint = "API key issue. Check KAIROS_API_KEY or run 'kairos config init'."
+            elif "rate limit" in err_msg.lower() or "429" in err_msg:
+                hint = "Rate limited. Wait a moment and try again."
+            else:
+                hint = "Try /help to see available commands."
+            console.error(f"Agent error: {err_msg}", hint=hint)
             continue
 
         console.console.print()
