@@ -65,7 +65,7 @@ class StatefulAgent(Agent):
 
     # ── Chat ────────────────────────────────────────────────────
 
-    def chat(self, user_message: str) -> dict[str, Any]:
+    def chat(self, user_message: str, prefill: str | None = None) -> dict[str, Any]:
         if self.interrupted:
             return {"content": "[Interrupted]", "confidence": None, "evidence": []}
 
@@ -76,12 +76,17 @@ class StatefulAgent(Agent):
         else:
             self._state.messages.append({"role": "user", "content": user_message})
 
+        if prefill:
+            self._state.messages.append({"role": "assistant", "content": prefill})
+
         self._runtime["turn"] = self._turn_count
         result = self._execute_loop(self._state, self._runtime)
         self._auto_save_session()
         return result
 
-    def chat_stream(self, user_message: str) -> Generator[dict, None, None]:
+    def chat_stream(
+        self, user_message: str, prefill: str | None = None
+    ) -> Generator[dict, None, None]:
         if self.interrupted:
             yield {"type": "error", "message": "Conversation interrupted."}
             return
@@ -92,6 +97,9 @@ class StatefulAgent(Agent):
             self._state = self._init_conversation(user_message)
         else:
             self._state.messages.append({"role": "user", "content": user_message})
+
+        if prefill:
+            self._state.messages.append({"role": "assistant", "content": prefill})
 
         self._runtime["turn"] = self._turn_count
         yield from self._execute_loop_stream(self._state, self._runtime)

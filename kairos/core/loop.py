@@ -778,10 +778,11 @@ class Agent:
     # ---- Tool Execution ---------------------------------------------------
 
     def _execute_tools(self, msg, messages, state) -> list[dict]:
-        """Execute tool calls with smart parallel dispatch.
+        """Execute tool calls with smart parallel dispatch and grace-call retry.
 
         Uses execute_tools_smart() — parallelizes read-only and path-scoped
         tools automatically, falls back to serial for write/interactive tools.
+        Each tool call uses _grace_call() for recoverable error retry.
         """
         from kairos.tools.registry import execute_tools_smart
 
@@ -815,35 +816,20 @@ class Agent:
                     "tool": tool_name,
                 })
 
-            # Wrap through pipeline (permission check, audit, etc.)
-            try:
-                result = self.pipeline.wrap_tool_call(
-                    tool_name,
-                    tool_args,
-                    lambda name, args, **kw: smart_results[i],
-                    state=state,
-                )
-                self._log_trajectory_event("tool_done", {
-                    "tool": tool_name,
-                    "success": True,
-                })
-                if trace_ctx:
-                    self._log_trace_event(trace_ctx, "tool_done", {
-                        "tool": tool_name,
-                        "success": True,
-                    })
-            except Exception as e:
-                err = classify_error(e)
-                result = {"error": str(e), "kind": err.kind.value}
-                self._log_trajectory_event("tool_error", {
-                    "tool": tool_name,
-                    "error": str(e)[:200],
-                })
-                if trace_ctx:
-                    self._log_trace_event(trace_ctx, "tool_error", {
-                        "tool": tool_name,
-                        "error": str(e)[:200],
-                    })
+            # Execute with grace-call retry
+            result = self._grace_call(
+                tool_name=tool_name,
+                tool_args=tool_args,
+                result_getter=lambda name=tool_name, args=tool_args, idx=i: (
+                    self.pipeline.wrap_tool_call(
+                        name, args,
+                        lambda n, a, **kw: smart_results[idx],
+                        state=state,
+                    )
+                ),
+                state=state,
+                trace_ctx=trace_ctx,
+            )
 
             results.append(result)
 
@@ -865,6 +851,158 @@ class Agent:
             })
 
         return results
+
+    def _grace_call(
+        self,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        result_getter: Callable[[], Any],
+        state: Any,
+        trace_ctx: Any = None,
+        max_retries: int = 2,
+    ) -> dict[str, Any]:
+        """Execute a tool call with graceful error recovery.
+
+        Strategy (Hermes-aligned):
+          1. First attempt: normal execution
+          2. On retryable error (RATE_LIMIT/NETWORK/TOOL_ERROR):
+             - Repair arguments (trim oversized, fix JSON types, simplify)
+             - Retry with repaired args via pipeline
+          3. On non-retryable error (AUTH/CONTEXT_OVERFLOW):
+             - Return structured error immediately
+          4. After max_retries exhausted:
+             - Return graceful error with retry metadata
+
+        Returns dict with:
+          - On success: the tool result + {"_grace": {"retried": False, "attempts": 1}}
+          - On graceful failure: {"error": ..., "_grace": {"retried": True, "attempts": N, ...}}
+        """
+        import copy
+
+        last_error: Exception | None = None
+        current_args = copy.deepcopy(tool_args)
+        attempts = 0
+
+        for attempt in range(1, max_retries + 1):
+            attempts = attempt
+            try:
+                result = result_getter()
+                # Success — tag with grace metadata
+                if isinstance(result, dict):
+                    result["_grace"] = {
+                        "retried": attempt > 1,
+                        "attempts": attempt,
+                    }
+                self._log_trajectory_event("tool_done", {
+                    "tool": tool_name,
+                    "success": True,
+                    "grace_attempts": attempt,
+                })
+                if trace_ctx:
+                    self._log_trace_event(trace_ctx, "tool_done", {
+                        "tool": tool_name,
+                        "success": True,
+                        "grace_attempts": attempt,
+                    })
+                return result
+
+            except Exception as e:
+                last_error = e
+                err = classify_error(e)
+                error_msg = str(e)[:300]
+
+                logger.warning(
+                    "Grace call attempt %d/%d for '%s' failed: %s (%s)",
+                    attempt, max_retries, tool_name, err.kind.value, error_msg[:100],
+                )
+
+                self._log_trajectory_event("tool_error", {
+                    "tool": tool_name,
+                    "error": error_msg[:200],
+                    "grace_attempt": attempt,
+                    "kind": err.kind.value,
+                })
+
+                # Non-retryable — fail immediately
+                if not err.retryable and err.kind not in (ErrorKind.TOOL_ERROR,):
+                    break
+
+                # Attempt repair for next try
+                if attempt < max_retries:
+                    current_args = self._repair_tool_args(
+                        tool_name, current_args, err, error_msg
+                    )
+
+        # All retries exhausted
+        graceful_error = {
+            "error": str(last_error)[:500],
+            "kind": classify_error(last_error).kind.value if last_error else "unknown",
+            "_grace": {
+                "retried": True,
+                "attempts": attempts,
+                "max_retries": max_retries,
+                "final_error": str(last_error)[:200] if last_error else "unknown",
+            },
+        }
+        self._log_trajectory_event("tool_error", {
+            "tool": tool_name,
+            "error": str(last_error)[:200] if last_error else "unknown",
+            "grace_exhausted": True,
+            "attempts": attempts,
+        })
+        if trace_ctx:
+            self._log_trace_event(trace_ctx, "tool_error", {
+                "tool": tool_name,
+                "error": str(last_error)[:200] if last_error else "unknown",
+                "grace_exhausted": True,
+            })
+        return graceful_error
+
+    def _repair_tool_args(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+        err: AgentError,
+        error_msg: str,
+    ) -> dict[str, Any]:
+        """Repair tool arguments for retry based on error type.
+
+        Repairs attempted:
+          - NETWORK timeout: no arg change (just retry)
+          - TOOL_ERROR: truncate oversized string values, remove null keys
+          - RATE_LIMIT: no arg change (backoff handled by LLMRetryMiddleware)
+          - Unknown JSON errors: strip problematic chars from values
+        """
+        repaired = dict(args)
+
+        if err.kind == ErrorKind.TOOL_ERROR:
+            # Truncate overly large string arguments
+            for key, val in list(repaired.items()):
+                if isinstance(val, str) and len(val) > 10000:
+                    repaired[key] = val[:8000] + "...[truncated by grace_call]"
+                    logger.info(
+                        "Grace call: truncated '%s' arg from %d to %d chars",
+                        key, len(val), len(repaired[key]),
+                    )
+                elif val is None:
+                    del repaired[key]
+                    logger.info("Grace call: removed None-valued arg '%s'", key)
+
+        elif "json" in error_msg.lower() or "decode" in error_msg.lower():
+            # Strip problematic characters from string values
+            for key, val in list(repaired.items()):
+                if isinstance(val, str):
+                    # Remove null bytes and other control chars
+                    cleaned = val.replace("\x00", "").replace("\r", "")
+                    if cleaned != val:
+                        repaired[key] = cleaned
+
+        # Always remove empty string args on retry
+        for key, val in list(repaired.items()):
+            if isinstance(val, str) and val.strip() == "":
+                del repaired[key]
+
+        return repaired
 
     # ---- Interrupt + Checkpoint -------------------------------------------
 

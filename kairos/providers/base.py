@@ -35,12 +35,24 @@ class ModelProvider:
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
+        prefill: str | None = None,
         **kwargs,
     ):
-        """Send a chat completion request. Returns the OpenAI response object."""
+        """Send a chat completion request. Returns the OpenAI response object.
+
+        Args:
+            messages: Chat message list.
+            tools: OpenAI tool schemas (optional).
+            prefill: If set, appends an assistant message with this text.
+                     Forces the model to continue from this prefix.
+        """
+        msgs = list(messages)
+        if prefill:
+            msgs.append({"role": "assistant", "content": prefill})
+
         params = {
             "model": self.config.model,
-            "messages": messages,
+            "messages": msgs,
             "max_tokens": self.config.max_tokens,
             "temperature": self.config.temperature,
             **kwargs,
@@ -53,15 +65,24 @@ class ModelProvider:
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
+        prefill: str | None = None,
         **kwargs,
     ) -> Generator[dict[str, Any], None, None]:
         """Stream chat completion tokens from the provider.
 
         Yields dicts with type: 'token', 'tool_call', 'tool_delta', or 'done'.
+
+        Args:
+            prefill: If set, appends an assistant message before streaming.
+                     Forces the model to continue from this prefix.
         """
+        msgs = list(messages)
+        if prefill:
+            msgs.append({"role": "assistant", "content": prefill})
+
         params = {
             "model": self.config.model,
-            "messages": messages,
+            "messages": msgs,
             "max_tokens": self.config.max_tokens,
             "temperature": self.config.temperature,
             "stream": True,
