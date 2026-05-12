@@ -27,7 +27,7 @@ from kairos.plugins import PluginManager, PluginManifest
 from kairos.providers.credential import CredentialPool, Credential, RetryConfig
 
 # Phase 2
-from kairos.memory import MemoryStore, MemoryMiddleware
+from kairos.memory import MemoryStore, MemoryMiddleware, VectorMemoryBackend, MemoryRouter
 from kairos.skills import SkillManager, SkillStatus, SkillEntry
 from kairos.session import SessionSearch
 from kairos.sandbox import (
@@ -67,7 +67,7 @@ __all__ = [
     "get_logger", "log_agent_event", "log_tool_call", "log_error",
     "PluginManager", "PluginManifest",
     "CredentialPool", "Credential", "RetryConfig",
-    "MemoryStore", "MemoryMiddleware",
+    "MemoryStore", "MemoryMiddleware", "VectorMemoryBackend", "MemoryRouter",
     "SkillManager", "SkillStatus", "SkillEntry",
     "SessionSearch",
     "Sandbox", "SandboxConfig", "SandboxProvider", "SandboxResult",

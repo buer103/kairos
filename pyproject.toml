@@ -42,6 +42,8 @@ gateway = ["aiohttp>=3.9.0"]
 compress = ["tiktoken>=0.5.0"]
 # RAG / vector search
 rag = ["chromadb>=0.4.0"]
+# Semantic memory backend (optional)
+chroma = ["chromadb>=0.4.0"]
 # Dev tools
 dev = [
     "pytest>=7.0",
