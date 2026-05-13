@@ -26,7 +26,7 @@ the instant when an archer releases the bowstring.
 |------|------|
 | **Hermes** | Agent Loop, Tool Registry, Skills+Curator, Session Search, Gateway, Cron, Delegation, RL Training, Providers |
 | **DeerFlow** | Middleware Pipeline (20 layers), Sub-Agent Factory, Sandbox, Typed ThreadState, Context Compression (3 tiers) |
-| **Kairos (new)** | RAG Engine, Structured Knowledge, Evidence Chain, Confidence+Citation, Credential Pool, Tiered Memory, Trace ID, Plugin System, Rich TUI |
+| **Kairos (new)** | RAG Engine, Structured Knowledge, Evidence Chain, Confidence+Citation, Credential Pool, Tiered Memory, Trace ID, Plugin System, Rich CLI + Textual TUI |
 
 ## 🚀 Quick Start
 
@@ -38,8 +38,13 @@ export DEEPSEEK_API_KEY=sk-your-key
 ### CLI
 
 ```bash
-# Interactive chat with live streaming
+# Interactive chat with live streaming (Rich CLI)
 kairos chat
+
+# Textual TUI — multi-panel terminal interface
+kairos tui                         # default skin
+kairos tui --skin hacker           # green-on-black theme
+kairos tui --verbose               # detailed tool output
 
 # One-shot query
 kairos "Explain Kubernetes in 3 bullet points"
@@ -135,7 +140,7 @@ User Message → Gateway (11 platforms: Telegram, WeChat, Slack, ...)
 | **Hooks** | 24 lifecycle hook points, pub/sub registry, priority ordering, thread-safe, error-isolated |
 | **Delegation** | Sub-agent spawning (ThreadPoolExecutor), Orchestrator, CancelEvent, Policy (whitelist/blacklist) |
 | **Training** | Trajectory recorder (ShareGPT JSONL), RL environment, 4 reward functions |
-| **CLI** | Rich TUI (10 skins), tab completion, slash commands, streaming, setup wizard |
+| **CLI** | Rich CLI (10 skins) + Textual TUI (4 skins, multi-panel), tab completion, slash commands, streaming, setup wizard |
 | **Deploy** | Docker multi-stage build, docker-compose, HEALTHCHECK, graceful shutdown |
 
 ## 📖 Documentation

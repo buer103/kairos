@@ -489,8 +489,12 @@ env = TrainingEnv(
 ## CLI
 
 ```bash
-# Interactive chat
+# Interactive chat (Rich CLI)
 kairos --api-key sk-... --model gpt-4o
+
+# Textual TUI (multi-panel)
+kairos tui                    # default
+kairos tui --skin hacker      # hacker theme
 
 # Custom provider (vLLM, Ollama, etc.)
 kairos --api-key not-needed --base-url http://localhost:8000/v1 --model llama-3
@@ -530,6 +534,78 @@ kairos skill view <name>
 | `/reasoning` | Toggle reasoning/thinking display |
 | `/session rename/delete` | Session management |
 | `/help` | Show all commands |
+
+---
+
+## Textual TUI
+
+```bash
+# Launch Textual TUI — multi-panel terminal chat interface
+kairos tui                           # default skin
+kairos tui --skin hacker             # hacker (green-on-black)
+kairos tui --skin retro              # retro (cyan/magenta)
+kairos tui --verbose                 # show tool arguments
+kairos tui --resume my-session       # resume saved session
+kairos tui --model gpt-4o            # specify model
+```
+
+The Textual TUI provides a multi-panel layout with sidebar, streaming chat,
+tool call cards, and skin hot-switching — all in pure Python with no
+Node.js dependency.
+
+**Layout:**
+```
+┌──────────┬──────────────────────────────────────┐
+│ Sidebar  │  Header (thinking… model)            │
+│ Sessions │  Transcript (streaming chat)         │
+│ Tools    │  ─  ⏳ terminal (running)            │
+│ Model    │  ─  ✅ search_files (12ms)          │
+│          │  Status (tokens/cost)                │
+│          │  Input bar                           │
+└──────────┴──────────────────────────────────────┘
+```
+
+**Key bindings:**
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+C` | Interrupt running agent |
+| `Ctrl+R` | Retry last message |
+| `Ctrl+L` | Clear transcript |
+| `Ctrl+S` | Save current session |
+| `Ctrl+Q` | Quit |
+| `Escape` | Clear input |
+
+**Slash commands:**
+
+| Command | Action |
+|---------|--------|
+| `/help` | Show all commands |
+| `/clear` | Clear transcript |
+| `/skin <name>` | Switch skin (default/hacker/retro/minimal) |
+| `/model <name>` | Switch model |
+| `/tools` | List available tools |
+| `/sessions` | List saved sessions |
+| `/save <name>` | Save session |
+| `/load <name>` | Load session |
+| `/verbose` | Toggle verbose tool output |
+| `/retry` | Retry last message |
+| `/undo` | Undo last exchange |
+| `/yolo` | Toggle YOLO mode |
+| `/reasoning` | Toggle reasoning display |
+| `/edit` | Multi-line input mode |
+
+**Programmatic:**
+
+```python
+from kairos.tui import KairosTUI
+from kairos.core.stateful_agent import StatefulAgent
+from kairos.providers.base import ModelConfig
+
+agent = StatefulAgent(model=ModelConfig(api_key="...", model="deepseek-chat"))
+app = KairosTUI(agent=agent, skin="default", verbose=False)
+app.run()
+```
 
 ---
 
