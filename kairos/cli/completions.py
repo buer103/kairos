@@ -30,6 +30,7 @@ class Completer:
     COMMANDS = {
         "chat": [],
         "run": [],
+        "tui": ["--skin", "--verbose", "--resume", "--model", "--base-url"],
         "cron": ["list", "add", "pause", "resume", "cancel", "remove"],
         "config": ["init", "show"],
         "skill": ["list", "view", "install", "uninstall", "update", "marketplace"],

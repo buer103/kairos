@@ -8,7 +8,7 @@ Usage (Hermes-style):
     kairos --resume <name>    Resume a saved session
     kairos --list-sessions    List saved sessions
     kairos --version          Show version
-    kairos cron|config|skill|curator  Management subcommands
+    kairos cron|config|skill|curator|tui|web  Management subcommands
 """
 
 from __future__ import annotations
@@ -89,6 +89,8 @@ def main():
         _doctor_mode()
     elif args[0] == "web":
         _web_mode(base_url=base_url, model_name=model_name)
+    elif args[0] == "tui":
+        _tui_mode(argv=sys.argv)
     elif args[0].startswith("-"):
         print(f"Unknown flag: {args[0]}")
         _print_usage()
@@ -124,6 +126,7 @@ Management:
   kairos curator status      Show skill lifecycle status
   kairos doctor               Health check
   kairos config migrate       Upgrade old config with new defaults
+  kairos tui [--skin NAME]    Launch Textual TUI (interactive)
   kairos web                  Launch Web UI (http://127.0.0.1:8080)
   kairos --version           Show version"""
     print(msg)
@@ -787,6 +790,28 @@ def _web_mode(base_url: str | None = None, model_name: str | None = None):
         asyncio.run(run())
     except KeyboardInterrupt:
         print("\n👋 Shutting down...")
+
+
+# ═══════════════════════════════════════════════════════════════
+# TUI mode — Textual-powered terminal UI
+# ═══════════════════════════════════════════════════════════════
+
+
+def _tui_mode(argv: list[str] | None = None) -> None:
+    """Launch the Textual TUI.
+
+    Delegates to kairos.tui.__main__.main() for arg parsing and app creation.
+    """
+    from kairos.tui.__main__ import main as tui_main
+
+    # Pass only the args after 'tui'
+    if argv and "tui" in argv:
+        idx = argv.index("tui")
+        tui_args = argv[idx + 1:]
+    else:
+        tui_args = []
+
+    tui_main(tui_args)
 
 
 # ═══════════════════════════════════════════════════════════════
