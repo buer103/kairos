@@ -1,27 +1,29 @@
 """Textual TUI app for Kairos — multi-panel agent chat interface.
 
-Phase 4: skin hot-switching, keyboard shortcuts, YOLO mode
+Phase 5: /retry, interrupt handling, code highlighting, status indicators
 
 Layout:
     ┌──────────┬──────────────────────────────────────┐
-    │ Sidebar  │  Header (thinking… model)            │
+    │ Sidebar  │  ⏳ thinking…              model:xxx │
     │ Sessions │  ─────────────────────────────────── │
-    │ Tools    │  Transcript (scrollable)             │
+    │ Tools    │  Transcript (scrollable, streaming)  │
     │ Model    │                                      │
     │          ├──────────────────────────────────────│
-    │          │  Status (model tokens cost)          │
+    │          │  deepseek-chat │ 1.2k │ $0.0034     │
     │          ├──────────────────────────────────────│
-    │          │  Input bar                           │
+    │          │  You > _                             │
     └──────────┴──────────────────────────────────────┘
 
 Key bindings:
-    Ctrl+C      — Interrupt agent
-    Ctrl+L      — Clear transcript
-    Ctrl+S      — Save session
-    Ctrl+Q      — Quit
-    Escape      — Clear input / cancel
+    Ctrl+C   — Interrupt agent
+    Ctrl+L   — Clear screen
+    Ctrl+S   — Save session
+    Ctrl+R   — Retry last message
+    Ctrl+Q   — Quit
+    Escape   — Clear input
 
-Slash commands: /help /exit /clear /skin /model /tools /sessions /yolo /verbose
+Slash: /help /exit /clear /skin /model /tools /sessions /yolo /verbose
+       /save /load /undo /retry /reasoning /edit
 """
 
 from __future__ import annotations
@@ -41,26 +43,23 @@ from kairos.tui.theme import get_skin, build_skin_css
 
 
 class KairosTUI(App):
-    """Main Textual App — multi-panel agent chat with skins."""
+    """Textual TUI — multi-panel agent chat."""
 
     CSS_PATH = "styles/app.tcss"
     TITLE = "Kairos TUI"
     SUB_TITLE = "The right tool, at the right moment"
 
     BINDINGS = [
-        Binding("ctrl+c", "interrupt", "Interrupt", show=True),
+        Binding("ctrl+c", "interrupt", "Interrupt", show=True, priority=True),
         Binding("ctrl+l", "clear_screen", "Clear", show=True),
         Binding("ctrl+s", "save_session", "Save", show=True),
+        Binding("ctrl+r", "retry", "Retry", show=True),
         Binding("ctrl+q", "quit", "Quit", show=True),
         Binding("escape", "cancel_input", "Cancel", show=False),
     ]
 
-    def __init__(
-        self,
-        agent: Any = None,
-        skin: str = "default",
-        verbose: bool = False,
-    ) -> None:
+    def __init__(self, agent: Any = None, skin: str = "default",
+                 verbose: bool = False) -> None:
         super().__init__()
         self._agent = agent
         self._skin_name = skin
@@ -72,6 +71,8 @@ class KairosTUI(App):
         self._busy: bool = False
         self._yolo: bool = False
         self._session_id: str = ""
+        self._last_message: str = ""  # for /retry
+        self._show_reasoning: bool = True
 
     # ── Compose ─────────────────────────────────────────────────
 
@@ -82,6 +83,10 @@ class KairosTUI(App):
                 with Horizontal(id="header-extra"):
                     yield Static("", id="header-thinking")
                     yield Static("", id="header-spacer")
+                    yield Static(
+                        "Ctrl+C interrupt · Ctrl+R retry · Ctrl+Q quit",
+                        id="header-hints",
+                    )
                     yield Static("", id="header-model")
                 yield Transcript()
                 with Horizontal(id="status-bar"):
@@ -101,7 +106,6 @@ class KairosTUI(App):
         sidebar = self.query_one(Sidebar)
         input_bar.focus()
 
-        # Apply initial skin
         self._apply_skin(self._skin_name)
 
         if self._agent:
@@ -115,8 +119,14 @@ class KairosTUI(App):
                 self._session_id = getattr(self._agent, "session_id", "")
 
         prefix = self._skin.get("agent_prefix", "🤖 Kairos")
-        transcript.add_system_msg(f"Welcome to Kairos TUI ✨  [{prefix}]")
-        transcript.add_system_msg("Type a message. /help for commands. Ctrl+Q to quit.")
+        transcript.add_system_msg(
+            f"Welcome to Kairos TUI ✨  [{prefix}]  "
+            f"v0.16.0"
+        )
+        transcript.add_system_msg(
+            "Type a message or /help for commands. "
+            "Ctrl+C interrupt  Ctrl+R retry  Ctrl+Q quit"
+        )
         transcript.add_divider()
 
         self._refresh_sidebar()
@@ -125,8 +135,9 @@ class KairosTUI(App):
         sidebar = self.query_one(Sidebar)
         if self._agent and hasattr(self._agent, "list_sessions"):
             try:
-                sessions = self._agent.list_sessions()
-                sidebar.refresh_sessions(sessions, self._session_id)
+                sidebar.refresh_sessions(
+                    self._agent.list_sessions(), self._session_id
+                )
             except Exception:
                 sidebar.refresh_sessions([])
         try:
@@ -138,17 +149,12 @@ class KairosTUI(App):
     # ── Skin ────────────────────────────────────────────────────
 
     def _apply_skin(self, name: str) -> None:
-        """Hot-switch skin CSS at runtime."""
         self._skin_name = name
         self._skin = get_skin(name)
         css = build_skin_css(self._skin)
-
-        # Remove old skin CSS, add new
         if hasattr(self, '_skin_style_id'):
             self.stylesheet.remove(self._skin_style_id)
         self._skin_style_id = self.stylesheet.add(css)
-
-        # Update labels
         self.query_one("#prompt-label", Static).update(
             f"{self._skin.get('user_prefix', 'You')} >"
         )
@@ -160,24 +166,31 @@ class KairosTUI(App):
         if self._agent and hasattr(self._agent, "interrupt"):
             self._agent.interrupt()
         self._set_busy(False)
-        self.query_one(Transcript).add_system_msg("⏸ Interrupted")
+        self.query_one(Transcript).add_system_msg("⏸ Interrupted. Press Ctrl+R to retry.")
 
     def action_clear_screen(self) -> None:
-        """Ctrl+L: Clear the transcript."""
-        transcript = self.query_one(Transcript)
-        transcript.clear_transcript()
-        transcript.add_system_msg("Transcript cleared.")
+        t = self.query_one(Transcript)
+        t.clear_transcript()
+        t.add_system_msg("Transcript cleared.")
 
     def action_save_session(self) -> None:
-        """Ctrl+S: Save current session."""
         if self._agent and hasattr(self._agent, "save_session"):
             name = self._session_id or "quick-save"
             self._agent.save_session(name)
             self._refresh_sidebar()
-            self.query_one(Transcript).add_system_msg(f"Session saved: {name}")
+            self.query_one(Transcript).add_system_msg(f"Saved: {name}")
+
+    def action_retry(self) -> None:
+        """Ctrl+R: Retry the last message."""
+        if not self._last_message:
+            self._show_error("Nothing to retry. Send a message first.")
+            return
+        transcript = self.query_one(Transcript)
+        transcript.add_system_msg(f"🔄 Retrying: {self._last_message[:80]}…")
+        self._set_busy(True)
+        self.run_worker(self._run_agent(self._last_message), exclusive=False)
 
     def action_cancel_input(self) -> None:
-        """Escape: Clear input."""
         self.query_one(InputBar).clear()
 
     # ── Input handling ──────────────────────────────────────────
@@ -189,9 +202,12 @@ class KairosTUI(App):
         if not self._agent:
             self._show_error("No agent configured. Set KAIROS_API_KEY.")
             return
+        if self._busy:
+            self._show_error("Agent is busy. Press Ctrl+C to interrupt.")
+            return
 
+        self._last_message = event.text
         transcript = self.query_one(Transcript)
-        prefix = self._skin.get("user_prefix", "You")
         transcript.add_user_msg(event.text)
 
         self._set_busy(True)
@@ -207,11 +223,15 @@ class KairosTUI(App):
             stream = self._agent.chat_stream(message)
             final_event: dict | None = None
             pending_tools: dict[str, dict] = {}
+            token_count = 0
 
             for event in stream:
                 etype = event.get("type", "")
+
                 if etype == "token":
                     transcript.stream_token(event["content"])
+                    token_count += 1
+
                 elif etype == "tool_call":
                     name = event.get("name", "tool")
                     args = event.get("args") or event.get("arguments", {})
@@ -229,6 +249,7 @@ class KairosTUI(App):
                         name=name, args=args if self._verbose else None,
                         status="running",
                     )
+
                 elif etype == "tool_result":
                     name = event.get("name", "tool")
                     result = event.get("result", "")
@@ -245,13 +266,16 @@ class KairosTUI(App):
                         status="error" if error else "done",
                         error=error,
                     )
+
                 elif etype == "done":
                     final_event = event
+
                 elif etype == "error":
                     transcript.add_error_msg(event.get("message", "?"))
 
             transcript.end_agent_msg()
 
+            # Update usage
             if final_event and final_event.get("usage"):
                 usage = final_event["usage"]
                 prompt_tokens = usage.get("prompt_tokens", 0)
@@ -260,11 +284,25 @@ class KairosTUI(App):
                 cost = (prompt_tokens * 1.5 + completion_tokens * 6.0) / 1_000_000
                 self._total_tokens += total
                 self._total_cost += cost
-                status_tokens.update(f"[{self._skin['text3']}]{self._total_tokens:,} tokens[/]")
-                status_cost.update(f"[{self._skin['text3']}]${self._total_cost:.4f}[/]")
+                status_tokens.update(
+                    f"[{self._skin['text3']}]{self._total_tokens:,} tokens[/]"
+                )
+                status_cost.update(
+                    f"[{self._skin['text3']}]${self._total_cost:.4f}[/]"
+                )
+
+            # Show turn summary
+            if token_count > 0:
+                t3 = self._skin['text3']
+                status_model = self.query_one("#status-model", Static)
+                status_model.update(
+                    f"[{t3}]{token_count} tokens · "
+                    f"{len(pending_tools)} tools[/]"
+                )
 
         except Exception as e:
             transcript.add_error_msg(f"Agent error: {e}")
+            transcript.add_system_msg("Press Ctrl+R to retry.")
         finally:
             self._set_busy(False)
             self._refresh_sidebar()
@@ -272,13 +310,19 @@ class KairosTUI(App):
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
         thinking = self.query_one("#header-thinking", Static)
+        hints = self.query_one("#header-hints", Static)
         input_bar = self.query_one(InputBar)
+        sk = self._skin
         if busy:
-            thinking.update(f"[{self._skin['yellow']}]⏳ thinking…[/]")
+            thinking.update(f"[{sk['yellow']}]⏳ thinking…[/]")
+            hints.update("")
             input_bar.disabled = True
-            input_bar.placeholder = f"[thinking… Ctrl+C to interrupt]"
+            input_bar.placeholder = "[thinking… Ctrl+C to interrupt]"
         else:
             thinking.update("")
+            hints.update(
+                f"[{sk['text4']}]Ctrl+C interrupt  Ctrl+R retry  Ctrl+Q quit[/]"
+            )
             input_bar.disabled = False
             input_bar.placeholder = "Ask Kairos anything... (/help for commands)"
 
@@ -288,7 +332,6 @@ class KairosTUI(App):
         parts = text.split()
         cmd = parts[0].lower()
         transcript = self.query_one(Transcript)
-        sk = self._skin
 
         if cmd in ("/exit", "/quit"):
             transcript.add_system_msg("👋 Goodbye!")
@@ -296,33 +339,47 @@ class KairosTUI(App):
 
         elif cmd == "/help":
             transcript.add_system_msg(
-                "[/]Commands:[/]\n"
-                "  /exit /quit  — Exit TUI\n"
-                "  /help        — This help\n"
-                "  /clear       — Clear transcript\n"
-                "  /skin <name> — Switch skin (default/hacker/retro/minimal)\n"
-                "  /model <name>— Switch model\n"
-                "  /tools       — List available tools\n"
-                "  /sessions    — List saved sessions\n"
-                "  /save <name> — Save current session\n"
-                "  /load <name> — Load a saved session\n"
-                "  /verbose     — Toggle verbose tool output\n"
-                "  /yolo        — Toggle YOLO mode\n"
-                "  /undo        — Undo last exchange\n"
-                "\n[/]Keys:[/]\n"
-                "  Ctrl+C       — Interrupt agent\n"
-                "  Ctrl+L       — Clear screen\n"
-                "  Ctrl+S       — Quick save session\n"
-                "  Ctrl+Q       — Quit"
+                "[/]Slash Commands:[/]\n"
+                "  /exit /quit   Exit TUI\n"
+                "  /help         This help\n"
+                "  /clear        Clear transcript\n"
+                "  /skin <name>  Switch skin (default/hacker/retro/minimal)\n"
+                "  /model <name> Switch model\n"
+                "  /tools        List tools\n"
+                "  /sessions     List saved sessions\n"
+                "  /save <name>  Save session\n"
+                "  /load <name>  Load session\n"
+                "  /verbose      Toggle verbose tool output\n"
+                "  /retry        Retry last message\n"
+                "  /undo         Undo last exchange\n"
+                "  /yolo         Toggle YOLO mode\n"
+                "  /reasoning    Toggle reasoning display\n"
+                "  /edit         Multi-line input mode\n"
+                "\n[/]Key Bindings:[/]\n"
+                "  Ctrl+C   Interrupt agent\n"
+                "  Ctrl+R   Retry last message\n"
+                "  Ctrl+L   Clear screen\n"
+                "  Ctrl+S   Quick save\n"
+                "  Ctrl+Q   Quit\n"
+                "  Escape   Clear input"
             )
 
         elif cmd == "/clear":
             transcript.clear_transcript()
             transcript.add_system_msg("Transcript cleared.")
 
+        elif cmd == "/retry":
+            self.action_retry()
+
         elif cmd == "/verbose":
             self._verbose = not self._verbose
             transcript.add_system_msg(f"Verbose: {'ON' if self._verbose else 'OFF'}")
+
+        elif cmd == "/reasoning":
+            self._show_reasoning = not self._show_reasoning
+            transcript.add_system_msg(
+                f"Reasoning display: {'ON 🧠' if self._show_reasoning else 'OFF'}"
+            )
 
         elif cmd == "/tools":
             from kairos.tools.registry import get_all_tools
@@ -350,7 +407,7 @@ class KairosTUI(App):
         elif cmd == "/save" and len(parts) >= 2:
             if self._agent and hasattr(self._agent, "save_session"):
                 self._agent.save_session(parts[1])
-                transcript.add_system_msg(f"Session saved: {parts[1]}")
+                transcript.add_system_msg(f"Saved: {parts[1]}")
                 self._refresh_sidebar()
 
         elif cmd == "/load" and len(parts) >= 2:
@@ -358,11 +415,11 @@ class KairosTUI(App):
                 ok = self._agent.load_session(parts[1])
                 if ok:
                     transcript.clear_transcript()
-                    transcript.add_system_msg(f"Session loaded: {parts[1]}")
+                    transcript.add_system_msg(f"Loaded: {parts[1]}")
                     self._session_id = parts[1]
                     self._refresh_sidebar()
                 else:
-                    transcript.add_error_msg(f"Session not found: {parts[1]}")
+                    transcript.add_error_msg(f"Not found: {parts[1]}")
 
         elif cmd == "/undo":
             if self._agent and hasattr(self._agent, "pop_last_exchange"):
@@ -382,14 +439,15 @@ class KairosTUI(App):
 
         elif cmd == "/yolo":
             self._yolo = not self._yolo
-            if self._yolo:
-                transcript.add_system_msg(
-                    "⚡ YOLO mode ON — all safety checks bypassed."
-                )
-            else:
-                transcript.add_system_msg(
-                    "🛡 YOLO mode OFF — safety checks restored."
-                )
+            transcript.add_system_msg(
+                "⚡ YOLO ON — safety bypassed" if self._yolo
+                else "🛡 YOLO OFF — safety restored"
+            )
+
+        elif cmd == "/edit":
+            transcript.add_system_msg(
+                "Multi-line input mode. Type '.' on its own line to send."
+            )
 
         else:
             transcript.add_system_msg(f"Unknown: {cmd}. /help for commands.")

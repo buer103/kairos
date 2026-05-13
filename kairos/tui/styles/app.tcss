@@ -97,8 +97,15 @@ TreeNode--label {
     color: #f5a623;
 }
 
-#header-spacer {
+#header-hints {
     width: 1fr;
+    color: #62666d;
+    text-align: center;
+    text-style: italic;
+}
+
+#header-spacer {
+    width: auto;
 }
 
 #header-model {
