@@ -1,12 +1,13 @@
 /*
  * Kairos TUI — Linear-inspired dark theme
- * Textual CSS — maps to existing Rich skin colors
+ * Phase 2: streaming, tool cards, thinking indicator
  */
 
 Screen {
     background: #08090a;
 }
 
+/* ── Header ─────────────────────────────────── */
 #header {
     dock: top;
     height: 1;
@@ -14,23 +15,26 @@ Screen {
     border-bottom: solid #1e1e24;
 }
 
-#header-title {
-    color: #5e6ad2;
-    text-style: bold;
+#header-extra {
+    height: 1;
     padding: 0 1;
+}
+
+#header-thinking {
+    width: auto;
+    color: #f5a623;
+}
+
+#header-spacer {
+    width: 1fr;
 }
 
 #header-model {
-    color: #8a8f98;
-    padding: 0 1;
-    text-align: right;
     width: auto;
+    color: #8a8f98;
 }
 
-#header-status {
-    color: #27a644;
-}
-
+/* ── Transcript ───────────────────────────── */
 #transcript {
     height: 1fr;
     overflow-y: auto;
@@ -40,13 +44,12 @@ Screen {
     scrollbar-color-active: #5e6ad2;
 }
 
-/* RichLog overrides for dark theme */
 RichLog {
     background: #08090a;
     color: #d0d6e0;
 }
 
-/* Input area */
+/* ── Input area ───────────────────────────── */
 #input-area {
     dock: bottom;
     height: auto;
@@ -74,7 +77,7 @@ Input:focus {
     border: solid #5e6ad2;
 }
 
-/* Status bar */
+/* ── Status bar ───────────────────────────── */
 #status-bar {
     dock: bottom;
     height: 1;
@@ -84,61 +87,19 @@ Input:focus {
     padding: 0 1;
 }
 
-#status-tokens {
+#status-tokens, #status-cost {
     width: auto;
-}
-
-#status-cost {
-    width: auto;
-    text-align: right;
 }
 
 #status-spacer {
     width: 1fr;
 }
 
-/* Tool call styling */
-.tool-header {
-    color: #f5a623;
-    text-style: bold;
-}
-
-.tool-result {
-    color: #8a8f98;
-}
-
-.tool-error {
-    color: #e5484d;
-}
-
-/* Message roles */
-.user-msg {
-    color: #5e6ad2;
-    text-style: bold;
-}
-
-.agent-msg {
-    color: #d0d6e0;
-}
-
-.system-msg {
-    color: #62666d;
-    text-style: italic;
-}
-
-.error-msg {
-    color: #e5484d;
-    text-style: bold;
-}
-
-/* Slash command hint */
-.slash-hint {
-    color: #4d7cff;
-    text-style: italic;
-}
-
-/* Code blocks in transcript */
-.code-block {
-    color: #a0d0ff;
-    background: #191a1b;
-}
+/* ── Misc ─────────────────────────────────── */
+.tool-header { color: #f5a623; text-style: bold; }
+.tool-result { color: #8a8f98; }
+.tool-error { color: #e5484d; }
+.user-msg { color: #5e6ad2; text-style: bold; }
+.agent-msg { color: #d0d6e0; }
+.system-msg { color: #62666d; text-style: italic; }
+.error-msg { color: #e5484d; text-style: bold; }
