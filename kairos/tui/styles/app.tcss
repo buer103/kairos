@@ -1,10 +1,82 @@
 /*
  * Kairos TUI — Linear-inspired dark theme
- * Phase 2: streaming, tool cards, thinking indicator
+ * Phase 3: multi-panel layout with sidebar
  */
 
 Screen {
     background: #08090a;
+}
+
+/* ── App container (sidebar | main) ──────── */
+#app-container {
+    height: 1fr;
+}
+
+/* ── Sidebar ─────────────────────────────── */
+#sidebar {
+    width: 26;
+    background: #0a0a0d;
+    border-right: solid #1e1e24;
+    padding: 0;
+}
+
+#sidebar-brand {
+    height: 3;
+    padding: 1;
+    color: #5e6ad2;
+    text-style: bold;
+    border-bottom: solid #1e1e24;
+}
+
+#sidebar-sessions, #sidebar-tools {
+    height: auto;
+    max-height: 20;
+    background: #0a0a0d;
+    border-bottom: solid #1e1e24;
+}
+
+Tree {
+    background: #0a0a0d;
+}
+
+Tree > .tree--label {
+    color: #8a8f98;
+    text-style: bold;
+    padding: 0 1;
+}
+
+Tree > .tree--guides {
+    color: #2a2a30;
+}
+
+Tree > .tree--guides-hover {
+    color: #5e6ad2;
+}
+
+TreeNode {
+    color: #d0d6e0;
+    padding: 0 1;
+}
+
+TreeNode:hover {
+    background: #191a1b;
+}
+
+TreeNode--label {
+    color: #d0d6e0;
+}
+
+#sidebar-model {
+    height: 3;
+    padding: 1;
+    color: #8a8f98;
+    border-top: solid #1e1e24;
+}
+
+/* ── Main area ───────────────────────────── */
+#main-area {
+    width: 1fr;
+    height: 1fr;
 }
 
 /* ── Header ─────────────────────────────────── */
@@ -94,12 +166,3 @@ Input:focus {
 #status-spacer {
     width: 1fr;
 }
-
-/* ── Misc ─────────────────────────────────── */
-.tool-header { color: #f5a623; text-style: bold; }
-.tool-result { color: #8a8f98; }
-.tool-error { color: #e5484d; }
-.user-msg { color: #5e6ad2; text-style: bold; }
-.agent-msg { color: #d0d6e0; }
-.system-msg { color: #62666d; text-style: italic; }
-.error-msg { color: #e5484d; text-style: bold; }

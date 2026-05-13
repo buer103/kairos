@@ -1,20 +1,19 @@
 """Textual TUI app for Kairos — multi-panel agent chat interface.
 
-Layout:
-    ┌──────────────────────────────────────────────┐
-    │  Kairos TUI              thinking… model:xxx │ Header
-    ├──────────────────────────────────────────────┤
-    │                                              │
-    │  Transcript — scrollable messages            │
-    │  with streaming and tool cards               │
-    │                                              │
-    ├──────────────────────────────────────────────┤
-    │  model │ 1.2k tokens │ $0.0034              │ Status
-    ├──────────────────────────────────────────────┤
-    │  You > _                                     │ Input
-    └──────────────────────────────────────────────┘
+Layout (Phase 3):
+    ┌──────────┬──────────────────────────────────────┐
+    │ Sidebar  │  Header (thinking… model)            │
+    │ Sessions │  ─────────────────────────────────── │
+    │ Skills   │  Transcript (scrollable)             │
+    │ Model    │                                      │
+    │          │                                      │
+    │          ├──────────────────────────────────────│
+    │          │  Status (model tokens cost)          │
+    │          ├──────────────────────────────────────│
+    │          │  Input bar                           │
+    └──────────┴──────────────────────────────────────┘
 
-Slash commands: /help /exit /clear /skin /model /tools /sessions /yolo /verbose /save
+Slash commands: /help /exit /clear /skin /model /tools /sessions /yolo /verbose /save /load /undo
 """
 
 from __future__ import annotations
@@ -28,10 +27,11 @@ from textual.widgets import Header, Footer, Static
 
 from kairos.tui.widgets.transcript import Transcript
 from kairos.tui.widgets.input_bar import InputBar
+from kairos.tui.widgets.sidebar import Sidebar
 
 
 class KairosTUI(App):
-    """Main Textual App for Kairos agent chat."""
+    """Main Textual App for Kairos agent chat — multi-panel layout."""
 
     CSS_PATH = "styles/app.tcss"
     TITLE = "Kairos TUI"
@@ -51,35 +51,41 @@ class KairosTUI(App):
         self._total_cost: float = 0.0
         self._model_name: str = ""
         self._busy: bool = False
+        self._session_id: str = ""
 
     # ── Compose ─────────────────────────────────────────────────
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=False)
+        """Three-zone layout: sidebar | main."""
+        with Horizontal(id="app-container"):
+            # Left sidebar
+            yield Sidebar()
 
-        # Thinking indicator + model name in header area
-        with Horizontal(id="header-extra"):
-            yield Static("", id="header-thinking")
-            yield Static("", id="header-spacer")
-            yield Static("", id="header-model")
+            # Right: header + transcript + status + input
+            with Vertical(id="main-area"):
+                with Horizontal(id="header-extra"):
+                    yield Static("", id="header-thinking")
+                    yield Static("", id="header-spacer")
+                    yield Static("", id="header-model")
 
-        yield Transcript()
+                yield Transcript()
 
-        with Horizontal(id="status-bar"):
-            yield Static("", id="status-model")
-            yield Static("", id="status-spacer")
-            yield Static("", id="status-tokens")
-            yield Static("", id="status-cost")
+                with Horizontal(id="status-bar"):
+                    yield Static("", id="status-model")
+                    yield Static("", id="status-spacer")
+                    yield Static("", id="status-tokens")
+                    yield Static("", id="status-cost")
 
-        with Container(id="input-area"):
-            yield Static("You >", id="prompt-label")
-            yield InputBar()
+                with Container(id="input-area"):
+                    yield Static("You >", id="prompt-label")
+                    yield InputBar()
 
     # ── Lifecycle ───────────────────────────────────────────────
 
     def on_mount(self) -> None:
         transcript = self.query_one(Transcript)
         input_bar = self.query_one(InputBar)
+        sidebar = self.query_one(Sidebar)
         input_bar.focus()
 
         if self._agent:
@@ -89,10 +95,36 @@ class KairosTUI(App):
                 self.query_one("#header-model", Static).update(
                     f"[#8a8f98]{self._model_name}[/]"
                 )
+                sidebar.set_model(self._model_name)
+                self._session_id = getattr(self._agent, "session_id", "")
 
+        # Welcome
         transcript.add_system_msg("Welcome to Kairos TUI  ✨")
         transcript.add_system_msg("Type a message to start. /help for slash commands.")
         transcript.add_divider()
+
+        # Populate sidebar
+        self._refresh_sidebar()
+
+    def _refresh_sidebar(self) -> None:
+        """Refresh sidebar data from agent."""
+        sidebar = self.query_one(Sidebar)
+
+        # Sessions
+        if self._agent and hasattr(self._agent, "list_sessions"):
+            try:
+                sessions = self._agent.list_sessions()
+                sidebar.refresh_sessions(sessions, self._session_id)
+            except Exception:
+                sidebar.refresh_sessions([])
+
+        # Tools
+        try:
+            from kairos.tools.registry import get_all_tools
+            tools = list(get_all_tools().keys())
+            sidebar.refresh_skills(tools)
+        except Exception:
+            sidebar.refresh_skills([])
 
     # ── Input handling ──────────────────────────────────────────
 
@@ -108,7 +140,6 @@ class KairosTUI(App):
         transcript = self.query_one(Transcript)
         transcript.add_user_msg(event.text)
 
-        # Mark busy — disables input during agent run
         self._set_busy(True)
         self.run_worker(self._run_agent(event.text), exclusive=False)
 
@@ -123,7 +154,7 @@ class KairosTUI(App):
         try:
             stream = self._agent.chat_stream(message)
             final_event: dict | None = None
-            pending_tools: dict[str, dict] = {}  # tool_call_id → {name, args, start_time}
+            pending_tools: dict[str, dict] = {}
 
             for event in stream:
                 etype = event.get("type", "")
@@ -140,13 +171,11 @@ class KairosTUI(App):
                             args = _json.loads(args)
                         except Exception:
                             args = {"raw": args}
-
                     tc_id = event.get("id", name)
                     pending_tools[tc_id] = {
                         "name": name, "args": args,
                         "start_time": time.monotonic(),
                     }
-                    # Show running immediately
                     transcript.add_tool_card(
                         name=name, args=args if self._verbose else None,
                         status="running",
@@ -156,20 +185,14 @@ class KairosTUI(App):
                     name = event.get("name", "tool")
                     result = event.get("result", "")
                     error = event.get("error", "")
-
-                    # Find matching pending tool
                     duration_ms = 0
-                    for tid, pt in pending_tools.items():
+                    for pt in pending_tools.values():
                         if pt["name"] == name and "result" not in pt:
                             duration_ms = (time.monotonic() - pt["start_time"]) * 1000
                             pt["result"] = result
-                            pt["error"] = error
                             break
-
                     transcript.add_tool_card(
-                        name=name,
-                        args=None,
-                        result=str(result) if result else "",
+                        name=name, result=str(result) if result else "",
                         duration_ms=duration_ms,
                         status="error" if error else "done",
                         error=error,
@@ -183,17 +206,14 @@ class KairosTUI(App):
 
             transcript.end_agent_msg()
 
-            # Update usage
             if final_event and final_event.get("usage"):
                 usage = final_event["usage"]
                 prompt_tokens = usage.get("prompt_tokens", 0)
                 completion_tokens = usage.get("completion_tokens", 0)
                 total = usage.get("total_tokens", prompt_tokens + completion_tokens)
                 cost = (prompt_tokens * 1.5 + completion_tokens * 6.0) / 1_000_000
-
                 self._total_tokens += total
                 self._total_cost += cost
-
                 status_tokens.update(f"[#8a8f98]{self._total_tokens:,} tokens[/]")
                 status_cost.update(f"[#8a8f98]${self._total_cost:.4f}[/]")
 
@@ -202,9 +222,9 @@ class KairosTUI(App):
 
         finally:
             self._set_busy(False)
+            self._refresh_sidebar()
 
     def _set_busy(self, busy: bool) -> None:
-        """Set busy state — shows/hides thinking indicator, disables input."""
         self._busy = busy
         thinking = self.query_one("#header-thinking", Static)
         input_bar = self.query_one(InputBar)
@@ -257,16 +277,13 @@ class KairosTUI(App):
             )
 
         elif cmd == "/tools":
-            if self._agent:
-                from kairos.tools.registry import get_all_tools
-                tools = get_all_tools()
-                transcript.add_system_msg(f"Available tools ({len(tools)}):")
-                for name in sorted(tools.keys())[:20]:
-                    transcript.add_system_msg(f"  🔧 {name}")
-                if len(tools) > 20:
-                    transcript.add_system_msg(f"  ... and {len(tools) - 20} more")
-            else:
-                transcript.add_system_msg("No agent loaded.")
+            from kairos.tools.registry import get_all_tools
+            tools = get_all_tools()
+            transcript.add_system_msg(f"Available tools ({len(tools)}):")
+            for name in sorted(tools.keys())[:20]:
+                transcript.add_system_msg(f"  🔧 {name}")
+            if len(tools) > 20:
+                transcript.add_system_msg(f"  ... {len(tools) - 20} more")
 
         elif cmd == "/sessions":
             if self._agent and hasattr(self._agent, "list_sessions"):
@@ -275,20 +292,18 @@ class KairosTUI(App):
                     transcript.add_system_msg(f"Saved sessions ({len(sessions)}):")
                     for s in sessions[:10]:
                         transcript.add_system_msg(
-                            f"  📁 {s.get('name', '?')} "
-                            f"({s.get('turn_count', 0)} turns)"
+                            f"  📁 {s.get('name','?')} "
+                            f"({s.get('turn_count',0)} turns)"
                         )
                 else:
                     transcript.add_system_msg("No saved sessions.")
-            else:
-                transcript.add_system_msg("Session listing not available.")
+            self._refresh_sidebar()
 
         elif cmd == "/save" and len(parts) >= 2:
             if self._agent and hasattr(self._agent, "save_session"):
                 self._agent.save_session(parts[1])
                 transcript.add_system_msg(f"Session saved: {parts[1]}")
-            else:
-                transcript.add_system_msg("Session saving not available.")
+                self._refresh_sidebar()
 
         elif cmd == "/load" and len(parts) >= 2:
             if self._agent and hasattr(self._agent, "load_session"):
@@ -296,17 +311,15 @@ class KairosTUI(App):
                 if ok:
                     transcript.clear_transcript()
                     transcript.add_system_msg(f"Session loaded: {parts[1]}")
+                    self._session_id = parts[1]
+                    self._refresh_sidebar()
                 else:
                     transcript.add_error_msg(f"Session not found: {parts[1]}")
-            else:
-                transcript.add_system_msg("Session loading not available.")
 
         elif cmd == "/undo":
             if self._agent and hasattr(self._agent, "pop_last_exchange"):
                 removed = self._agent.pop_last_exchange()
                 transcript.add_system_msg(f"Undid last exchange ({removed} messages).")
-            else:
-                transcript.add_system_msg("Undo not available.")
 
         elif cmd == "/skin" and len(parts) >= 2:
             skin_name = parts[1]
