@@ -615,9 +615,12 @@ class Agent:
                 continue
 
             # ---- Done ----
+            content = msg.content or ""  # Guard against None/empty
+            if not content.strip():
+                content = "(empty response)"
             assistant_msg = {
                 "role": "assistant",
-                "content": msg.content,
+                "content": content,
             }
             if reasoning:
                 assistant_msg["reasoning"] = reasoning
@@ -628,7 +631,7 @@ class Agent:
             get_hook_registry().emit(
                 HookPoint.AGENT_END,
                 agent=self,
-                iterations=iteration,
+                iterations=self.budget.iterations,
                 confidence=case.confidence if case else None,
             )
 
@@ -680,7 +683,7 @@ class Agent:
                     HookPoint.BEFORE_MODEL,
                     agent=self,
                     messages_count=len(messages),
-                    iteration=iteration,
+                    iteration=self.budget.iterations,
                     provider=getattr(self._active_provider, "config", None),
                 )
 
@@ -700,7 +703,7 @@ class Agent:
                 get_hook_registry().emit(
                     HookPoint.AFTER_MODEL,
                     agent=self,
-                    iteration=iteration,
+                    iteration=self.budget.iterations,
                     has_tool_calls=bool(getattr(result.choices[0].message, "tool_calls", None)),
                 )
                 return result
@@ -715,6 +718,7 @@ class Agent:
                     agent=self,
                     error=str(e)[:200],
                     kind=err.kind.value,
+                    iteration=self.budget.iterations,
                     providers_tried=providers_tried,
                 )
 
@@ -905,6 +909,12 @@ class Agent:
 
             results.append(result)
 
+            # Serialize tool result, truncating to prevent context overflow
+            result_json = json.dumps(result, ensure_ascii=False)
+            if len(result_json) > 50000:
+                result_json = result_json[:50000] + (
+                    f'\\n... [truncated {len(result_json) - 50000} bytes]'
+                )
             messages.append({
                 "role": "assistant",
                 "tool_calls": [{
@@ -919,7 +929,7 @@ class Agent:
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc.id,
-                "content": json.dumps(result, ensure_ascii=False),
+               "content": result_json,
             })
 
         return results
